@@ -1,0 +1,17 @@
+# Presets that the Kaggle submission notebook can read to select which
+# local full-train weights + thresholds to use.
+
+presets:
+  baseline_full:
+    weight_path: weights/full_train/model_full_data_baseline.pth
+    description: "Baseline full-data training from base.yaml"
+    mask_threshold: 0.5
+    cls_threshold: 0.5
+    auth_gate_forged_threshold: 0.5
+
+  best_oof_full:
+    weight_path: weights/full_train/model_full_best_oof.pth
+    description: "Full-data model trained with best-OFF CV hyperparams"
+    mask_threshold: 0.5
+    cls_threshold: 0.5
+    auth_gate_forged_threshold: 0.5

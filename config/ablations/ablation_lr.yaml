@@ -1,0 +1,11 @@
+# Simple LR sweep ablation on top of base.yaml
+
+experiment:
+  name: ablation_lr
+
+trainer:
+  cv:
+    lr: 3.0e-4        # higher LR
+    epochs: 3
+  full:
+    lr: 3.0e-4

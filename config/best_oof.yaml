@@ -1,0 +1,24 @@
+# Overrides once you’ve found a strong CV configuration.
+
+experiment:
+  name: best_oof
+
+trainer:
+  cv:
+    # Example: slightly more training / tuned LR
+    n_folds: 5
+    epochs: 5
+    batch_size: 4
+    lr: 3.0e-4
+    weight_decay: 1.0e-4
+
+  full:
+    epochs: 30
+    batch_size: 4
+    lr: 3.0e-4
+    weight_decay: 1.0e-4
+    save_path: weights/full_train/model_full_best_oof.pth
+
+model:
+  # Example tweak – update to match the actual best config you discover.
+  num_queries: 20

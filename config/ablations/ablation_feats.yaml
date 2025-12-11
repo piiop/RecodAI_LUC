@@ -1,0 +1,9 @@
+# Architecture / regularization ablation.
+
+experiment:
+  name: ablation_feats
+
+model:
+  num_queries: 25
+  backbone_trainable: false          # freeze backbone as an ablation
+  authenticity_penalty_weight: 2.0   # weaker authenticity penalty
