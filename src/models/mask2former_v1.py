@@ -20,8 +20,10 @@ import torch.nn.functional as F
 from torchvision.models import convnext_tiny, ConvNeXt_Tiny_Weights
 from torchvision.ops import FeaturePyramidNetwork
 
-from scipy.optimize import linear_sum_assignment
 import copy
+
+from .losses_metrics import compute_losses
+
 
 class ConvNeXtFPNBackbone(nn.Module):
     """
@@ -434,183 +436,26 @@ class Mask2FormerForgeryModel(nn.Module):
         img_logits = img_logits.squeeze(-1)          # [B]
 
         if targets is not None:
-            return self.compute_losses(mask_logits, class_logits, img_logits, targets)
+            return compute_losses(
+                mask_logits,
+                class_logits,
+                img_logits,
+                targets,
+                cost_bce=self.cost_bce,
+                cost_dice=self.cost_dice,
+                loss_weight_mask_bce=self.loss_weight_mask_bce,
+                loss_weight_mask_dice=self.loss_weight_mask_dice,
+                loss_weight_mask_cls=self.loss_weight_mask_cls,
+                loss_weight_img_auth=self.loss_weight_img_auth,
+                loss_weight_auth_penalty=self.loss_weight_auth_penalty,
+                authenticity_penalty_weight=self.authenticity_penalty_weight,
+                auth_penalty_cls_threshold=self.auth_penalty_cls_threshold,
+            )
         else:
             return self.inference(mask_logits, class_logits, img_logits)
 
     # ------------------- Losses & matching -------------------
-
-    def compute_losses(self, mask_logits, class_logits, img_logits, targets):
-        """
-        mask_logits: [B, Q, Hm, Wm]
-        class_logits: [B, Q]  (forgery vs ignore)
-        img_logits: [B]
-        targets: list[dict]
-        """
-        B, Q, Hm, Wm = mask_logits.shape
-
-        # Hungarian matching per image
-        indices = []
-        for b in range(B):
-            tgt_masks = targets[b]["masks"]  # [N_gt, H, W] or [0, ...] if authentic
-            if tgt_masks.numel() == 0:
-                indices.append((torch.empty(0, dtype=torch.long, device=mask_logits.device),
-                                torch.empty(0, dtype=torch.long, device=mask_logits.device)))
-                continue
-
-            # Downsample GT masks to mask resolution
-            tgt_masks_resized = F.interpolate(
-                tgt_masks.unsqueeze(1).float(),
-                size=(Hm, Wm),
-                mode="nearest"
-            ).squeeze(1)  # [N_gt, Hm, Wm]
-
-            pred = mask_logits[b]  # [Q, Hm, Wm]
-            cost = self.match_cost(pred, tgt_masks_resized)  # [N_gt, Q]
-
-            tgt_ind, pred_ind = linear_sum_assignment(cost.detach().cpu().numpy())
-            tgt_ind = torch.as_tensor(tgt_ind, dtype=torch.long, device=mask_logits.device)
-            pred_ind = torch.as_tensor(pred_ind, dtype=torch.long, device=mask_logits.device)
-            indices.append((pred_ind, tgt_ind))
-
-        # Mask losses (Dice + BCE) on matched pairs
-        loss_mask = 0.0
-        loss_dice = 0.0
-        num_instances = 0
-
-        for b in range(B):
-            pred_ind, tgt_ind = indices[b]
-            if len(pred_ind) == 0:
-                continue
-
-            tgt_masks = targets[b]["masks"]
-            tgt_masks_resized = F.interpolate(
-                tgt_masks.unsqueeze(1).float(),
-                size=(Hm, Wm),
-                mode="nearest"
-            ).squeeze(1)  # [N_gt, Hm, Wm]
-
-            pred_masks = mask_logits[b, pred_ind]        # [M, Hm, Wm]
-            gt_masks = tgt_masks_resized[tgt_ind]        # [M, Hm, Wm]
-
-            loss_mask += self.sigmoid_ce_loss(pred_masks, gt_masks).sum()
-            loss_dice += self.dice_loss(pred_masks, gt_masks).sum()
-            num_instances += pred_ind.numel()
-
-        if num_instances > 0:
-            loss_mask = loss_mask / num_instances
-            loss_dice = loss_dice / num_instances
-        else:
-            loss_mask = mask_logits.sum() * 0.0
-            loss_dice = mask_logits.sum() * 0.0
-
-        # Mask-level classification BCE
-        # All GT instances are "forgery" (1). Unmatched predictions are ignore (0).
-        class_targets = torch.zeros_like(class_logits)  # [B, Q]
-        for b in range(B):
-            pred_ind, tgt_ind = indices[b]
-            if len(pred_ind) > 0:
-                class_targets[b, pred_ind] = 1.0
-
-        loss_cls = F.binary_cross_entropy_with_logits(
-            class_logits,
-            class_targets,
-        )
-
-        # Image-level authenticity loss
-        img_targets = torch.stack([t["image_label"].float() for t in targets]).to(img_logits.device)  # [B]
-        loss_img = F.binary_cross_entropy_with_logits(img_logits, img_targets)
-
-        # Authenticity penalty: if authentic image (y=0) has non-empty predicted forgery mask
-        cls_thresh_penalty = self.auth_penalty_cls_threshold
-
-        with torch.no_grad():
-            mask_probs = torch.sigmoid(mask_logits)        # [B, Q, Hm, Wm]
-            cls_probs = torch.sigmoid(class_logits)        # [B, Q]
-            forgery_mask = cls_probs > cls_thresh_penalty  # [B, Q]
-
-        penalty = mask_logits.new_zeros(())
-        for b in range(B):
-            if img_targets[b] == 0.0:  # authentic image
-                if forgery_mask[b].any():
-                    m = mask_probs[b, forgery_mask[b]]     # [K, Hm, Wm]
-                    penalty = penalty + m.mean()
-
-        loss_auth_penalty = self.authenticity_penalty_weight * penalty / max(B, 1)
-
-        loss_total = (
-            self.loss_weight_mask_bce * loss_mask +
-            self.loss_weight_mask_dice * loss_dice +
-            self.loss_weight_mask_cls * loss_cls +
-            self.loss_weight_img_auth * loss_img +
-            self.loss_weight_auth_penalty * loss_auth_penalty
-        )
-
-        losses = {
-            "loss_mask_bce": loss_mask,
-            "loss_mask_dice": loss_dice,
-            "loss_mask_cls": loss_cls,
-            "loss_img_auth": loss_img,
-            "loss_auth_penalty": loss_auth_penalty,
-            "loss_total": loss_total,
-        }
-
-        return losses
-
-
-    def match_cost(self, pred_masks, tgt_masks):
-        """
-        pred_masks: [Q, H, W]
-        tgt_masks: [N_gt, H, W]
-        Returns cost matrix [N_gt, Q]
-        """
-        Q, H, W = pred_masks.shape
-        N = tgt_masks.shape[0]
-
-        pred_flat = pred_masks.flatten(1)  # [Q, HW]
-        tgt_flat = tgt_masks.flatten(1)    # [N, HW]
-
-        # BCE cost
-        pred_logits = pred_flat.unsqueeze(0)             # [1, Q, HW]
-        tgt = tgt_flat.unsqueeze(1)                      # [N, 1, HW]
-        bce = F.binary_cross_entropy_with_logits(
-            pred_logits.expand(N, -1, -1),
-            tgt.expand(-1, Q, -1),
-            reduction="none",
-        ).mean(-1)  # [N, Q]
-
-        # Dice cost
-        pred_prob = pred_flat.sigmoid()
-        numerator = 2 * (pred_prob.unsqueeze(0) * tgt_flat.unsqueeze(1)).sum(-1)
-        denominator = pred_prob.unsqueeze(0).sum(-1) + tgt_flat.unsqueeze(1).sum(-1) + 1e-6
-        dice = 1.0 - (numerator + 1e-6) / (denominator)
-
-        cost = self.cost_bce * bce + self.cost_dice * dice
-        return cost
-
-    @staticmethod
-    def sigmoid_ce_loss(inputs, targets):
-        """
-        BCE on logits, per-instance mean.
-        inputs: [M, H, W], targets: [M, H, W]
-        """
-        return F.binary_cross_entropy_with_logits(inputs, targets, reduction="none").mean(dim=(1, 2))
-
-    @staticmethod
-    def dice_loss(inputs, targets, eps=1e-6):
-        """
-        Soft dice loss on logits.
-        inputs: [M, H, W], targets: [M, H, W]
-        """
-        inputs = inputs.sigmoid()
-        inputs = inputs.flatten(1)
-        targets = targets.flatten(1)
-
-        numerator = 2 * (inputs * targets).sum(1)
-        denominator = inputs.sum(1) + targets.sum(1) + eps
-        loss = 1 - (numerator + eps) / (denominator)
-        return loss
-
+    # (in models/losses_metrics.py)
     # ------------------- Inference -------------------
 
     def inference(
