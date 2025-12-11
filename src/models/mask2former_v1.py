@@ -13,6 +13,7 @@ scores, and image-level forged probability).
 """ 
 
 import numpy as np
+import copy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -20,10 +21,7 @@ import torch.nn.functional as F
 from torchvision.models import convnext_tiny, ConvNeXt_Tiny_Weights
 from torchvision.ops import FeaturePyramidNetwork
 
-import copy
-
 from .losses_metrics import compute_losses
-
 
 class ConvNeXtFPNBackbone(nn.Module):
     """
@@ -313,7 +311,7 @@ class Mask2FormerForgeryModel(nn.Module):
         backbone_trainable=True,
         fpn_out_channels=256,
         authenticity_penalty_weight=5.0,
-        auth_gate_forged_threshold=0.5,  # new
+        auth_gate_forged_threshold=0.5,  
         default_mask_threshold=0.5,      # optional, for masks
         default_cls_threshold=0.5,       # optional, for per-query forgery
         auth_penalty_cls_threshold=None,
