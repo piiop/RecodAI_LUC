@@ -235,11 +235,19 @@ def log_best_metric(
     key = summary_key or f"best_{metric_name}"
     summary = wandb.run.summary
 
-    if key not in summary:
+    # Avoid `key in summary` because wandb.Summary's membership
+    # check can hit __getitem__ with integer indices and raise KeyError.
+    try:
+        prev = summary[key]
+    except KeyError:
+        # First time we see this metric: just set it.
+        summary[key] = value
+        return
+    except Exception:
+        # If summary behaves unexpectedly, fall back to simply setting it.
         summary[key] = value
         return
 
-    prev = summary[key]
     try:
         is_better = (value > prev) if higher_is_better else (value < prev)
     except Exception:
@@ -247,6 +255,7 @@ def log_best_metric(
 
     if is_better:
         summary[key] = value
+
 
 
 def log_artifact(
