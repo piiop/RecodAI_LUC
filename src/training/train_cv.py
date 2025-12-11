@@ -28,7 +28,14 @@ from src.inference.postprocess import rle_encode
 from src.models.mask2former_v1 import Mask2FormerForgeryModel
 from src.models.kaggle_metric import score as kaggle_score
 from src.utils.seed_logging_utils import setup_seed, log_seed_info
-
+from src.utils.wandb_utils import (
+    init_wandb_run,
+    log_config,
+    log_epoch_metrics,
+    set_summary,
+    log_best_metric,
+    finish_run,
+)
 
 
 def build_solution_df(full_dataset):
@@ -234,6 +241,14 @@ def run_cv(
                 f"train loss: {running_loss:.4f}"
             )
 
+            # --- wandb: per-epoch train loss for this fold ---
+            log_epoch_metrics(
+                stage=f"fold{fold + 1}/train",
+                metrics={"loss": running_loss},
+                epoch=epoch + 1,
+                global_step=fold * num_epochs + epoch + 1,
+            )
+
         # ---- Inference on validation fold (OOF) ----
         model.eval()
         with torch.no_grad():
@@ -300,6 +315,14 @@ def run_cv(
         fold_scores.append(fold_score)
         print(f"Fold {fold + 1} metric: {fold_score:.6f}")
 
+        # --- wandb: per-fold validation metric ---
+        log_epoch_metrics(
+            stage=f"fold{fold + 1}/val",
+            metrics={"kaggle_metric": fold_score},
+            epoch=num_epochs,
+            global_step=(fold + 1) * num_epochs,
+        )
+
         # Optionally save per-fold predictions
         fold_submission.to_csv(
             os.path.join(out_dir, f"fold_{fold + 1}_oof.csv"), index=False
@@ -320,20 +343,26 @@ def run_cv(
         row_id_column_name="row_id",
     )
 
+    mean_cv = float(np.mean(fold_scores))
     print("\nPer-fold scores:", fold_scores)
-    print("Mean CV:", float(np.mean(fold_scores)))
+    print("Mean CV:", mean_cv)
     print("OOF score:", float(oof_score))
 
     # Save overall OOF predictions + metrics
     oof_submission.to_csv(os.path.join(out_dir, "oof_predictions.csv"), index=False)
     metrics = {
         "fold_scores": [float(s) for s in fold_scores],
-        "mean_cv": float(np.mean(fold_scores)),
+        "mean_cv": mean_cv,
         "oof_score": float(oof_score),
     }
     with open(os.path.join(out_dir, "oof_metrics.json"), "w") as f:
         json.dump(metrics, f, indent=2)
 
+    # --- wandb: summary fields for this CV run ---
+    set_summary("fold_scores", metrics["fold_scores"])
+    set_summary("mean_cv", metrics["mean_cv"])
+    set_summary("oof_score", metrics["oof_score"])
+    log_best_metric("mean_cv", metrics["mean_cv"], higher_is_better=True)
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -429,18 +458,32 @@ def main():
     seed_info = setup_seed(args.seed, deterministic=args.deterministic)
     log_seed_info(seed_info)
 
-    run_cv(
-        paths=paths,
-        num_folds=args.n_folds,
-        num_epochs=args.epochs,
-        batch_size=args.batch_size,
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-        device=device,
-        train_transform=None,  # plug in your train transform here if desired
-        val_transform=None,  # plug in your val transform here if desired
-        out_dir=args.out_dir,
+    # --- wandb: init run + log config ---
+    run = init_wandb_run(
+        config=vars(args),
+        project="mask2former-forgery",
+        job_type="cv",
+        group="cv",
+        name=f"cv_{Path(args.out_dir).name}",
     )
+    log_config(vars(args))
+
+    try:
+        run_cv(
+            paths=paths,
+            num_folds=args.n_folds,
+            num_epochs=args.epochs,
+            batch_size=args.batch_size,
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+            device=device,
+            train_transform=None,  # plug in your train transform here if desired
+            val_transform=None,  # plug in your val transform here if desired
+            out_dir=args.out_dir,
+        )
+    finally:
+        finish_run()
+
 
 
 if __name__ == "__main__":

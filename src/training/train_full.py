@@ -16,6 +16,14 @@ from torch.utils.data import DataLoader
 from src.data.dataloader import ForgeryDataset
 from src.models.mask2former_v1 import Mask2FormerForgeryModel
 from src.utils.seed_logging_utils import setup_seed, log_seed_info
+from src.utils.wandb_utils import (
+    init_wandb_run,
+    log_config,
+    log_epoch_metrics,
+    set_summary,
+    log_artifact,
+    finish_run,
+)
 
 def build_train_dataset(paths, train_transform=None):
     """
@@ -120,9 +128,26 @@ def run_full_train(
         epoch_loss = running_loss / len(train_dataset)
         print(f"Epoch {epoch + 1}/{num_epochs} - Loss: {epoch_loss:.4f}")
 
+        # --- wandb: per-epoch full-train loss ---
+        log_epoch_metrics(
+            stage="train",
+            metrics={"loss": epoch_loss},
+            epoch=epoch + 1,
+            global_step=epoch + 1,
+        )
+
     # Save weights (to be zipped / uploaded to Kaggle later)
     torch.save(model.state_dict(), str(save_path))
     print(f"Model weights saved to: {save_path}")
+
+    # --- wandb: final loss + model artifact ---
+    set_summary("final_train_loss", float(epoch_loss))
+    log_artifact(
+        path=str(save_path),
+        name=save_path.stem,
+        type="model",
+        aliases=["full_train", "latest"],
+    )
 
 
 def parse_args():
@@ -224,19 +249,31 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     seed_info = setup_seed(args.seed, deterministic=args.deterministic)
-    log_seed_info(seed_info)    
+    log_seed_info(seed_info)
 
-    run_full_train(
-        paths=paths,
-        num_epochs=args.epochs,
-        batch_size=args.batch_size,
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-        device=device,
-        train_transform=None,  # plug in the same train transform used in CV
-        save_path=args.save_path,
+    # --- wandb: init run + log config ---
+    run = init_wandb_run(
+        config=vars(args),
+        project="mask2former-forgery",
+        job_type="full_train",
+        group="full_train",
+        name=f"full_{Path(args.save_path).stem}",
     )
+    log_config(vars(args))
 
+    try:
+        run_full_train(
+            paths=paths,
+            num_epochs=args.epochs,
+            batch_size=args.batch_size,
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+            device=device,
+            train_transform=None,  # plug in the same train transform used in CV
+            save_path=args.save_path,
+        )
+    finally:
+        finish_run()
 
 if __name__ == "__main__":
     main()
