@@ -5,6 +5,9 @@
 /train_images
 /train_masks
 
+# Models
+model_full_data_baseline.pth
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
