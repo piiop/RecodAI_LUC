@@ -96,6 +96,11 @@ def _set_torch_determinism(deterministic: bool) -> None:
     """
     Configure PyTorch's deterministic settings in a version-tolerant way.
     """
+    # Ensure cuBLAS uses deterministic workspace when requested
+    if deterministic:
+        # Only set if not already provided by user / shell
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+
     # cuDNN flags
     torch.backends.cudnn.deterministic = deterministic
     torch.backends.cudnn.benchmark = not deterministic
@@ -113,6 +118,7 @@ def _set_torch_determinism(deterministic: bool) -> None:
     except AttributeError:
         # Very old PyTorch; nothing more to do
         pass
+
 
 
 def setup_seed(seed: int, deterministic: bool = True) -> SeedInfo:
