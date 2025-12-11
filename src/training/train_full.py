@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader
 
 from src.data.dataloader import ForgeryDataset
 from src.models.mask2former_v1 import Mask2FormerForgeryModel
-
+from src.utils.seed_logging_utils import setup_seed, log_seed_info
 
 def build_train_dataset(paths, train_transform=None):
     """
@@ -190,6 +190,20 @@ def parse_args():
         default="weights/full_train/model_full_data_baseline.pth",
         help="Path to save model weights (default: weights/full_train/model_full_data_baseline.pth)",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for Python/NumPy/PyTorch (default: 42)",
+    )
+    parser.add_argument(
+        "--no_deterministic",
+        action="store_false",
+        dest="deterministic",
+        help="Disable PyTorch deterministic mode (cuDNN, etc.)",
+    )
+    parser.set_defaults(deterministic=True)
+
 
     return parser.parse_args()
 
@@ -208,6 +222,9 @@ def main():
         paths["supp_masks"] = args.supp_masks
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    seed_info = setup_seed(args.seed, deterministic=args.deterministic)
+    log_seed_info(seed_info)    
 
     run_full_train(
         paths=paths,
