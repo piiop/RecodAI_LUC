@@ -6,7 +6,7 @@
 /train_masks
 
 # Models
-model_full_data_baseline.pth
+*.pth
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
