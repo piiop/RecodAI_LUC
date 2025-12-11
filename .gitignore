@@ -7,6 +7,9 @@
 /data/train_images
 /data/train_masks
 
+# wandb
+/wandb/
+
 # Training / experiment artifacts
 /experiments/oof_results/
 /experiments/wandb/
