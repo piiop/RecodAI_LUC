@@ -1,0 +1,97 @@
+_wandb:
+    value:
+        cli_version: 0.23.1
+        e:
+            g2496fdjy9570cqigtllqh0hdtjzx839:
+                args:
+                    - cv
+                    - --train_authentic
+                    - data/train_images/authentic
+                    - --train_forged
+                    - data/train_images/forged
+                    - --train_masks
+                    - data/train_masks
+                    - --out_dir
+                    - experiments/oof_results/mini_smoke
+                cpu_count: 8
+                cpu_count_logical: 16
+                cudaVersion: "12.9"
+                disk:
+                    /:
+                        total: "2047341490176"
+                        used: "369353854976"
+                email: piiop.piiop@gmail.com
+                executable: C:\Users\piiop\miniconda3\envs\dev\python.exe
+                git:
+                    commit: c212ac59ee8a2a6c50fadf11c54133fe77591a1a
+                    remote: https://github.com/piiop/RecodAI_LUC.git
+                gpu: NVIDIA GeForce RTX 5080
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Blackwell
+                      cudaCores: 10752
+                      memoryTotal: "17094934528"
+                      name: NVIDIA GeForce RTX 5080
+                      uuid: GPU-fa88bd43-4288-38a6-feae-c1f43b14fbf0
+                host: CUBE
+                memory:
+                    total: "66145669120"
+                os: Windows-10-10.0.26100-SP0
+                program: -m src.cli
+                python: CPython 3.11.13
+                root: C:\Users\piiop\Desktop\Portfolio\Projects\RecodAI_LUC
+                startedAt: "2025-12-11T19:50:35.970698Z"
+                writerId: g2496fdjy9570cqigtllqh0hdtjzx839
+        m: []
+        python_version: 3.11.13
+        t:
+            "1":
+                - 1
+                - 5
+                - 41
+                - 53
+                - 80
+            "2":
+                - 1
+                - 5
+                - 41
+                - 53
+                - 80
+            "3":
+                - 2
+                - 13
+                - 16
+            "4": 3.11.13
+            "5": 0.23.1
+            "8":
+                - 3
+            "12": 0.23.1
+            "13": windows-amd64
+batch_size:
+    value: 4
+command:
+    value: cv
+deterministic:
+    value: true
+epochs:
+    value: 3
+lr:
+    value: 0.0001
+n_folds:
+    value: 5
+out_dir:
+    value: experiments/oof_results/mini_smoke
+seed:
+    value: 42
+supp_forged:
+    value: null
+supp_masks:
+    value: null
+train_authentic:
+    value: data/train_images/authentic
+train_forged:
+    value: data/train_images/forged
+train_masks:
+    value: data/train_masks
+weight_decay:
+    value: 0.0001

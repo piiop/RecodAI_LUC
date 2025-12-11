@@ -26,6 +26,12 @@ project_root/
 │   │   ├── ablation_feats.yaml
 │   │   └── ...
 │   └── kaggle_submission_presets.yaml
+├── data/
+│   ├── supplemental_images/
+│   ├── supplemental_masks/
+│   ├── test_images/
+│   ├── train_images/
+│   └── train_masks/
 ├── src/
 │   ├── data/
 │   │   └── dataloader.py
@@ -61,6 +67,9 @@ project_root/
     ├── cv_analysis.ipynb
     ├── kagglelb_analysis.ipynb
     └── debugger.ipynb
+
+
+
 Overview
 
 This structure allows:

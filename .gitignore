@@ -1,9 +1,15 @@
 # Data dirs
-/supplemental_images
-/supplemental_masks
-/test_images
-/train_images
-/train_masks
+/data/supplemental_images
+/data/supplemental_masks
+/data/test_images
+/data/train_images
+/data/train_masks
+
+# Training / experiment artifacts
+/experiments/oof_results/
+/experiments/wandb/
+/experiments/multi_configs/
+/weights/
 
 # Models
 *.pth
