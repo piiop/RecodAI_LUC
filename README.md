@@ -59,8 +59,8 @@ project_root/
     ├── EDA.ipynb
     ├── baseline_prototype.ipynb
     ├── cv_analysis.ipynb
-    └── kagglelb_analysis.ipynb
-
+    ├── kagglelb_analysis.ipynb
+    └── debugger.ipynb
 Overview
 
 This structure allows:
