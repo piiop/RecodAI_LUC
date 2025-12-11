@@ -67,9 +67,6 @@ project_root/
     ├── cv_analysis.ipynb
     ├── kagglelb_analysis.ipynb
     └── debugger.ipynb
-
-
-
 Overview
 
 This structure allows:
