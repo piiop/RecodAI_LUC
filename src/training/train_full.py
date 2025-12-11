@@ -13,7 +13,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
-from src.data.dataloader import ForgeryDataset
+from src.data.dataloader import ForgeryDataset, get_train_transform
 from src.models.mask2former_v1 import Mask2FormerForgeryModel
 from src.utils.seed_logging_utils import setup_seed, log_seed_info
 from src.utils.wandb_utils import (
@@ -77,6 +77,10 @@ def run_full_train(
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Full dataset with same transforms as CV training
+    train_dataset = build_train_dataset(paths, train_transform=train_transform)
+
+    if train_transform is None:
+        train_transform = get_train_transform()
     train_dataset = build_train_dataset(paths, train_transform=train_transform)
 
     train_loader = DataLoader(
@@ -268,7 +272,7 @@ def main():
             lr=args.lr,
             weight_decay=args.weight_decay,
             device=device,
-            train_transform=None,  # plug in the same train transform used in CV
+            train_transform=get_train_transform(),
             save_path=args.save_path,
         )
     finally:

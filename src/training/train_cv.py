@@ -22,8 +22,11 @@ from torch.utils.data import DataLoader
 
 from sklearn.model_selection import StratifiedKFold
 
-# Local imports following your new structure
-from src.data.dataloader import ForgeryDataset  # assumes your dataset class lives here
+from src.data.dataloader import (
+    ForgeryDataset,
+    get_train_transform,
+    get_val_transform,
+)
 from src.inference.postprocess import rle_encode
 from src.models.mask2former_v1 import Mask2FormerForgeryModel
 from src.models.kaggle_metric import score as kaggle_score
@@ -95,9 +98,6 @@ def build_solution_df(full_dataset):
 def make_datasets(paths, train_transform=None, val_transform=None):
     """
     Helper to build the full_dataset (no transforms) + template train/val datasets.
-
-    You can plug in your albumentations transforms here if you wish.
-    For now, this keeps transforms as arguments (default None).
     """
     full_dataset = ForgeryDataset(
         paths["train_authentic"],
@@ -160,6 +160,12 @@ def run_cv(
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     os.makedirs(out_dir, exist_ok=True)
+
+    # --- plug in default Albumentations transforms if not provided ---
+    if train_transform is None:
+        train_transform = get_train_transform()
+    if val_transform is None:
+        val_transform = get_val_transform()
 
     # Build datasets
     full_dataset, ds_train_template, ds_val_template = make_datasets(
