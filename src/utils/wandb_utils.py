@@ -92,7 +92,7 @@ def init_wandb_run(
     notes: Optional[str] = None,
     run_id: Optional[str] = None,
     resume: Optional[Union[bool, str]] = None,
-) -> Optional["wandb.sdk.wandb_run.Run"]:
+):
     """
     Initialize a wandb run (or return None if wandb is unavailable / disabled).
 
