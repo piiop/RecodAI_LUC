@@ -259,7 +259,6 @@ def main():
         group="full_train",
         name=f"full_{Path(args.save_path).stem}",
     )
-    log_config(vars(args))
 
     try:
         run_full_train(

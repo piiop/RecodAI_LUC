@@ -173,7 +173,6 @@ def _run_cv_from_args(args: argparse.Namespace) -> None:
         group="cv",
         name=f"cv_{Path(args.out_dir).name}",
     )
-    log_config(vars(args))
 
     try:
         run_cv(
@@ -311,7 +310,6 @@ def _run_full_train_from_args(args: argparse.Namespace) -> None:
         group="full_train",
         name=f"full_{Path(args.save_path).stem}",
     )
-    log_config(vars(args))
 
     try:
         run_full_train(

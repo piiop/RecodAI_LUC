@@ -466,7 +466,6 @@ def main():
         group="cv",
         name=f"cv_{Path(args.out_dir).name}",
     )
-    log_config(vars(args))
 
     try:
         run_cv(

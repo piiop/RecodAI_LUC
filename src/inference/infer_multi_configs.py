@@ -132,16 +132,6 @@ def run_single_experiment(
         group="multi_configs",
         name=f"multi_{exp.name}",
     )
-    log_config(
-        {
-            "experiment": exp.name,
-            "num_folds": exp.num_folds,
-            "num_epochs": exp.num_epochs,
-            "batch_size": exp.batch_size,
-            "lr": exp.lr,
-            "weight_decay": exp.weight_decay,
-        }
-    )
 
     try:
         run_cv(
