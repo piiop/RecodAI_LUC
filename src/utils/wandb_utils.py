@@ -285,7 +285,6 @@ def log_artifact(
         return
 
     art_name = name or os.path.basename(file_path)
-
     artifact = wandb.Artifact(
         name=art_name,
         type=type,
@@ -293,11 +292,6 @@ def log_artifact(
     )
     artifact.add_file(file_path)
     wandb.log_artifact(artifact)
-
-    if aliases:
-        # Aliases are attached when using the returned artifact reference
-        logged_artifact = wandb.run.use_artifact(artifact)
-        logged_artifact.aliases.extend(list(aliases))
 
 
 def finish_run() -> None:

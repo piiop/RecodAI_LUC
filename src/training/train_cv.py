@@ -198,6 +198,9 @@ def run_cv(
             batch_size=batch_size,
             shuffle=True,
             collate_fn=lambda x: tuple(zip(*x)),
+            num_workers=4,          # try 4 first; can test 8 later
+            pin_memory=True,        # nicer GPU transfers
+            persistent_workers=True # keeps workers alive across epochs
         )
         val_loader = DataLoader(
             torch.utils.data.Subset(ds_val, val_idx),
