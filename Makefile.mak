@@ -73,7 +73,7 @@ cv:
 	  $(if $(SUPP_MASKS),--supp_masks $(SUPP_MASKS),) \
 	  --n_folds 5 \
 	  --epochs 3 \
-	  --batch_size 4 \
+	  --batch_size 8\
 	  --lr 1e-4 \
 	  --weight_decay 1e-4 \
 	  --out_dir $(EXPER_OOF_DIR)/baseline
@@ -92,7 +92,7 @@ full-baseline:
 	  $(if $(SUPP_FORGED),--supp_forged $(SUPP_FORGED),) \
 	  $(if $(SUPP_MASKS),--supp_masks $(SUPP_MASKS),) \
 	  --epochs 30 \
-	  --batch_size 4 \
+	  --batch_size 8\
 	  --lr 1e-4 \
 	  --weight_decay 1e-4 \
 	  --save_path $(FULL_BASELINE_PTH)
