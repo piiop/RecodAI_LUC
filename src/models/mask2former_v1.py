@@ -451,6 +451,22 @@ class Mask2FormerForgeryModel(nn.Module):
             auth_gate_forged_threshold=overrides.get("auth_gate_forged_threshold", None),
         )
 
+    @torch.no_grad()
+    def forward_logits(self, images):
+        if isinstance(images, list):
+            images = torch.stack(images, dim=0)
+
+        fpn_feats = self.backbone(images)
+        mask_feats = self.mask_feature_proj(fpn_feats[0])
+        pos_list = [self.position_encoding(x) for x in fpn_feats]
+        hs = self.transformer_decoder(fpn_feats, pos_list)[-1]
+
+        class_logits = self.class_head(hs).squeeze(-1)  # [B,Q]
+        mask_embeddings = self.mask_embed_head(hs)       # [B,Q,C]
+        mask_logits = torch.einsum("bqc,bchw->bqhw", mask_embeddings, mask_feats)
+        img_logits = self.img_head(fpn_feats[-1]).squeeze(-1)  # [B]
+        return mask_logits, class_logits, img_logits
+
     # ------------------- Losses & matching -------------------
     # (in models/losses_metrics.py)
     # ------------------- Inference -------------------

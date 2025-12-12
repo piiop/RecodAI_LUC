@@ -123,6 +123,13 @@ def run_full_train(
         model.train()
         running_loss = 0.0
 
+        # ---- debug: pick 1 fixed batch per epoch (train) ----
+        debug_images, debug_targets = next(iter(train_loader))
+        debug_images = [img.to(device) for img in debug_images]
+        for t in debug_targets:
+            t["masks"] = t["masks"].to(device)
+            t["image_label"] = t["image_label"].to(device)
+
         for images, targets in train_loader:
             images = [img.to(device) for img in images]
 
@@ -150,7 +157,37 @@ def run_full_train(
             global_step=epoch + 1,
         )
 
-    # Save weights (to be zipped / uploaded to Kaggle later)
+        # ---- debug: logit/prob sanity (collapse detectors) ----
+        model.eval()
+        with torch.no_grad():
+            mask_logits, class_logits, img_logits = model.forward_logits(debug_images)
+
+            cls_probs = class_logits.sigmoid()                 # [B,Q]
+            img_probs = img_logits.sigmoid()                   # [B]
+            mask_probs = mask_logits.sigmoid().flatten(2)      # [B,Q,HW]
+
+            cls_max = cls_probs.max(dim=1).values              # [B]
+            mask_max = mask_probs.max(dim=2).values.max(dim=1).values  # [B] (max over Q and HW)
+
+            dbg = {
+                "cls_max_mean": cls_max.mean().item(),
+                "cls_max_p95": cls_max.quantile(0.95).item(),
+                "keep_rate@0.1": (cls_probs > 0.1).float().mean().item(),
+                "keep_rate@0.2": (cls_probs > 0.2).float().mean().item(),
+                "keep_rate@0.3": (cls_probs > 0.3).float().mean().item(),
+                "img_forged_mean": img_probs.mean().item(),
+                "mask_max_mean": mask_max.mean().item(),
+            }
+
+        log_epoch_metrics(
+            stage="debug",
+            metrics=dbg,
+            epoch=epoch + 1,
+            global_step=epoch + 1,
+        )
+        model.train()
+
+    # Save weights
     torch.save(model.state_dict(), str(save_path))
     print(f"Model weights saved to: {save_path}")
 

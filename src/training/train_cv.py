@@ -258,6 +258,48 @@ def run_cv(
                 global_step=fold * num_epochs + epoch + 1,
             )
 
+            # ===================== DEBUG LOGITS (ADD THIS) =====================
+            model.eval()
+            with torch.no_grad():
+                dbg_images, _ = next(iter(val_loader))
+                dbg_images = [img.to(device) for img in dbg_images]
+
+                images_t = torch.stack(dbg_images)
+
+                fpn_feats = model.backbone(images_t)
+                mask_feats = model.mask_feature_proj(fpn_feats[0])
+                pos_list = [model.position_encoding(x) for x in fpn_feats]
+                hs = model.transformer_decoder(fpn_feats, pos_list)[-1]
+
+                class_logits = model.class_head(hs).squeeze(-1)   # [B, Q]
+                mask_logits = torch.einsum(
+                    "bqc,bchw->bqhw",
+                    model.mask_embed_head(hs),
+                    mask_feats,
+                )
+                img_logits = model.img_head(fpn_feats[-1]).squeeze(-1)
+
+                cls_probs = class_logits.sigmoid()
+                mask_probs = mask_logits.sigmoid()
+                img_probs = img_logits.sigmoid()
+
+                dbg_metrics = {
+                    "cls/max_mean": cls_probs.max(dim=1).values.mean().item(),
+                    "cls/keep@0.2": (cls_probs > 0.2).float().mean().item(),
+                    "cls/keep@0.3": (cls_probs > 0.3).float().mean().item(),
+                    "mask/max_mean": mask_probs.flatten(2).max(dim=2).values.mean().item(),
+                    "img/forged_mean": img_probs.mean().item(),
+                }
+
+            log_epoch_metrics(
+                stage=f"fold{fold + 1}/debug",
+                metrics=dbg_metrics,
+                epoch=epoch + 1,
+                global_step=fold * num_epochs + epoch + 1,
+            )
+
+            model.train()
+
         # ---- Inference on validation fold (OOF) ----
         model.eval()
         with torch.no_grad():
