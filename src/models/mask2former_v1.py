@@ -396,55 +396,34 @@ class Mask2FormerForgeryModel(nn.Module):
 
     def forward(self, images, targets=None, inference_overrides=None):
         """
-        images: Tensor [B, 3, H, W]
-        targets: list[dict], each with:
-          - 'masks': [N_gt, H, W] binary mask tensor
-          - 'image_label': scalar tensor 0 (authentic) or 1 (forged)
-        Returns:
-          - if training: dict of losses
-          - if inference: list[dict] with masks, mask_scores, mask_forgery_scores, image_authenticity
+        images: Tensor [B, 3, H, W] or list[Tensor(C,H,W)]
+        targets: list[dict] or None
         """
         if isinstance(images, list):
             images = torch.stack(images, dim=0)
-
-        if not self.training:
-            overrides = inference_overrides or {}
-            return self.inference(
-                mask_logits=mask_logits,
-                class_logits=class_logits,
-                img_logits=img_logits,
-                mask_threshold=overrides.get("mask_threshold", None),
-                cls_threshold=overrides.get("cls_threshold", None),
-                auth_gate_forged_threshold=overrides.get("auth_gate_forged_threshold", None),
-            )    
 
         B = images.shape[0]
 
         # Backbone + FPN
         fpn_feats = self.backbone(images)  # [P2, P3, P4, P5]
-        # Use highest-res level (P2) for mask features
         mask_feats = self.mask_feature_proj(fpn_feats[0])  # [B, mask_dim, Hm, Wm]
         pos_list = [self.position_encoding(x) for x in fpn_feats]
 
         # Transformer on multi-scale features
         hs_all = self.transformer_decoder(fpn_feats, pos_list)  # [num_layers, B, Q, C]
-        hs = hs_all[-1]                                         # last layer: [B, Q, C]
+        hs = hs_all[-1]  # [B, Q, C]
 
         # Heads
-        class_logits    = self.class_head(hs).squeeze(-1)       # [B, Q]
-        mask_embeddings = self.mask_embed_head(hs)              # [B, Q, mask_dim]
-
-
-        # Produce mask logits via dot-product
-        # mask_feats: [B, mask_dim, Hm, Wm]; mask_emb: [B, Q, mask_dim]
+        class_logits = self.class_head(hs).squeeze(-1)     # [B, Q]
+        mask_embeddings = self.mask_embed_head(hs)         # [B, Q, mask_dim]
         mask_logits = torch.einsum("bqc, bchw -> bqhw", mask_embeddings, mask_feats)
 
-        # Image-level authenticity from highest-level FPN feature (P5)
-        high_level_feat = fpn_feats[-1]  # [B, C, Hh, Wh]
-        img_logits = self.img_head(high_level_feat)  # [B, 1]
-        img_logits = img_logits.squeeze(-1)          # [B]
+        # Image-level authenticity
+        high_level_feat = fpn_feats[-1]
+        img_logits = self.img_head(high_level_feat).squeeze(-1)  # [B]
 
-        if targets is not None:
+        # ---- training loss ----
+        if self.training and targets is not None:
             return compute_losses(
                 mask_logits,
                 class_logits,
@@ -460,8 +439,17 @@ class Mask2FormerForgeryModel(nn.Module):
                 authenticity_penalty_weight=self.authenticity_penalty_weight,
                 auth_penalty_cls_threshold=self.auth_penalty_cls_threshold,
             )
-        else:
-            return self.inference(mask_logits, class_logits, img_logits)
+
+        # ---- inference (also used when targets is None) ----
+        overrides = inference_overrides or {}
+        return self.inference(
+            mask_logits=mask_logits,
+            class_logits=class_logits,
+            img_logits=img_logits,
+            mask_threshold=overrides.get("mask_threshold", None),
+            cls_threshold=overrides.get("cls_threshold", None),
+            auth_gate_forged_threshold=overrides.get("auth_gate_forged_threshold", None),
+        )
 
     # ------------------- Losses & matching -------------------
     # (in models/losses_metrics.py)

@@ -3,10 +3,14 @@
 import torch
 from pathlib import Path
 from torch.utils.data import DataLoader
-
-from src.data.dataloader import ForgeryDataset
+import os
+from src.data.dataloader import (
+    ForgeryDataset,
+    get_val_transform,
+    detection_collate_fn,
+)
 from src.models.mask2former_v1 import Mask2FormerForgeryModel
-from src.infer_multi_configs import run_threshold_sweep
+from src.inference.infer_multi_configs import run_threshold_sweep
 
 
 def main():
@@ -16,24 +20,36 @@ def main():
     # paths
     # --------------------
     WEIGHTS_PATH = "weights/full_train/model_full_data_baseline.pth"
-    OUT_DIR = Path("analysis/cls_threshold_sweep")
+    OUT_DIR = Path("experiments/cls_threshold_sweep")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+    ROOT_DIR = os.environ.get("DATA_ROOT", "data")
+    # --------------------
+    # dataset / loader (correct ForgeryDataset usage)
+    # --------------------
+    authentic_path = os.path.join(ROOT_DIR, "train_images", "authentic")
+    forged_path = os.path.join(ROOT_DIR, "train_images", "forged")
+    masks_path = os.path.join(ROOT_DIR, "train_masks")
+    supp_forged_path = os.path.join(ROOT_DIR, "supplemental_images")
+    supp_masks_path = os.path.join(ROOT_DIR, "supplemental_masks")
 
-    # --------------------
-    # dataset / loader
-    # --------------------
     dataset = ForgeryDataset(
-        split="train",
-        return_masks=True,
-        transforms=None,   # no aug at inference
+        authentic_path=authentic_path,
+        forged_path=forged_path,
+        masks_path=masks_path,
+        supp_forged_path=supp_forged_path if os.path.isdir(supp_forged_path) else None,
+        supp_masks_path=supp_masks_path if os.path.isdir(supp_masks_path) else None,
+        transform=get_val_transform(img_size=256),
+        is_train=False,
     )
 
-    loader = DataLoader(
+    loader = torch.utils.data.DataLoader(
         dataset,
         batch_size=4,
         shuffle=False,
         num_workers=4,
         pin_memory=True,
+        collate_fn=detection_collate_fn,  # IMPORTANT: list-of-images/list-of-targets
+        persistent_workers=True,
     )
 
     # --------------------

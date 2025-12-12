@@ -226,26 +226,26 @@ def run_threshold_sweep(
             for cls_thr in cls_thresholds:
                 for mask_thr in mask_thresholds:
                     for images, targets in loader:
-                        images = images.to(device, non_blocking=True)
+                        # detection_collate_fn returns list[Tensor]
+                        images = [img.to(device, non_blocking=True) for img in images]
 
-                        # IMPORTANT: pass thresholds into model inference
                         outputs = model(
                             images,
                             inference_overrides=dict(
                                 auth_gate_forged_threshold=gate,
                                 cls_threshold=cls_thr,
                                 mask_threshold=mask_thr,
-                            )
+                            ),
                         )
 
-                        all_rows.extend(_flatten_infer_stats(outputs, gate, cls_thr, mask_thr))
+                        all_rows.extend(
+                            _flatten_infer_stats(outputs, gate, cls_thr, mask_thr)
+                        )
 
     df_rows = pd.DataFrame(all_rows)
 
-    # aggregated view (one row per sweep point)
     df_agg = (
-        df_rows
-        .groupby(["gate", "cls_threshold", "mask_threshold"], as_index=False)
+        df_rows.groupby(["gate", "cls_threshold", "mask_threshold"], as_index=False)
         .agg(
             gate_pass_rate=("gate_pass", "mean"),
             avg_num_keep=("num_keep", "mean"),
