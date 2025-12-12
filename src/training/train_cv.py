@@ -236,7 +236,7 @@ def run_cv(
                     t["image_label"] = t["image_label"].to(device)
 
                 loss_dict = model(images, targets)
-                loss = sum(loss_dict.values())
+                loss = loss_dict["loss_total"]
 
                 optimizer.zero_grad()
                 loss.backward()

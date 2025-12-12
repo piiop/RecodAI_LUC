@@ -29,8 +29,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
-
 import torch
+import pandas as pd
 
 from src.training.train_cv import run_cv
 from src.utils.seed_logging_utils import setup_seed, log_seed_info
@@ -178,6 +178,92 @@ def run_single_experiment(
         "out_dir": str(out_dir),
     }
 
+# Sweeps
+
+def _flatten_infer_stats(batch_outputs, gate, cls_thr, mask_thr):
+    """Turn model outputs (list[dict]) into per-image rows."""
+    rows = []
+    for i, o in enumerate(batch_outputs):
+        rows.append({
+            "gate": gate,
+            "cls_threshold": cls_thr,
+            "mask_threshold": mask_thr,
+            "idx_in_batch": i,
+
+            # core sweep stats
+            "gate_pass": int(bool(o.get("gate_pass", False))),
+            "num_keep": int(o.get("num_keep", 0)),
+            "max_cls_prob": float(o.get("max_cls_prob", 0.0)),
+            "max_mask_prob": float(o.get("max_mask_prob", 0.0)),
+            "any_fg_pre_keep": int(bool(o.get("any_fg_pre_keep", False))),
+            "any_fg_post_keep": int(bool(o.get("any_fg_post_keep", False))),
+
+            # useful extra (optional but handy)
+            "image_forged_prob": float(o.get("image_authenticity", 0.0)),
+        })
+    return rows
+
+
+def run_threshold_sweep(
+    model,
+    loader,
+    device,
+    gates,
+    cls_thresholds,
+    mask_thresholds,
+    out_csv_path=None,
+):
+    """
+    Runs inference for each (gate, cls_thr, mask_thr) and returns:
+      - df_rows: per-image stats for analysis notebooks
+      - df_agg: per-config aggregated stats
+    """
+    all_rows = []
+
+    model.eval()
+    with torch.no_grad():
+        for gate in gates:
+            for cls_thr in cls_thresholds:
+                for mask_thr in mask_thresholds:
+                    for images, targets in loader:
+                        images = images.to(device, non_blocking=True)
+
+                        # IMPORTANT: pass thresholds into model inference
+                        outputs = model(
+                            images,
+                            inference_overrides=dict(
+                                auth_gate_forged_threshold=gate,
+                                cls_threshold=cls_thr,
+                                mask_threshold=mask_thr,
+                            )
+                        )
+
+                        all_rows.extend(_flatten_infer_stats(outputs, gate, cls_thr, mask_thr))
+
+    df_rows = pd.DataFrame(all_rows)
+
+    # aggregated view (one row per sweep point)
+    df_agg = (
+        df_rows
+        .groupby(["gate", "cls_threshold", "mask_threshold"], as_index=False)
+        .agg(
+            gate_pass_rate=("gate_pass", "mean"),
+            avg_num_keep=("num_keep", "mean"),
+            any_fg_pre_keep_rate=("any_fg_pre_keep", "mean"),
+            any_fg_post_keep_rate=("any_fg_post_keep", "mean"),
+            max_cls_prob_mean=("max_cls_prob", "mean"),
+            max_mask_prob_mean=("max_mask_prob", "mean"),
+            image_forged_prob_mean=("image_forged_prob", "mean"),
+        )
+        .sort_values(["gate", "cls_threshold", "mask_threshold"])
+    )
+
+    if out_csv_path:
+        Path(out_csv_path).parent.mkdir(parents=True, exist_ok=True)
+        df_rows.to_csv(out_csv_path, index=False)
+        df_agg.to_csv(str(out_csv_path).replace(".csv", "_agg.csv"), index=False)
+
+    return df_rows, df_agg
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -333,6 +419,8 @@ def main() -> None:
         print("\nExperiments with missing metrics:")
         for r in missing:
             print(f"  {r['name']:16s}  (check {r['out_dir']})")
+
+
 
 
 if __name__ == "__main__":

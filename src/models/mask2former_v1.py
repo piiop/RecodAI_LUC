@@ -394,7 +394,7 @@ class Mask2FormerForgeryModel(nn.Module):
             auth_penalty_cls_threshold if auth_penalty_cls_threshold is not None else default_cls_threshold
         )
 
-    def forward(self, images, targets=None):
+    def forward(self, images, targets=None, inference_overrides=None):
         """
         images: Tensor [B, 3, H, W]
         targets: list[dict], each with:
@@ -406,6 +406,17 @@ class Mask2FormerForgeryModel(nn.Module):
         """
         if isinstance(images, list):
             images = torch.stack(images, dim=0)
+
+        if not self.training:
+            overrides = inference_overrides or {}
+            return self.inference(
+                mask_logits=mask_logits,
+                class_logits=class_logits,
+                img_logits=img_logits,
+                mask_threshold=overrides.get("mask_threshold", None),
+                cls_threshold=overrides.get("cls_threshold", None),
+                auth_gate_forged_threshold=overrides.get("auth_gate_forged_threshold", None),
+            )    
 
         B = images.shape[0]
 
@@ -492,13 +503,30 @@ class Mask2FormerForgeryModel(nn.Module):
         for b in range(B):
             forged_prob = img_probs[b].item()
 
+            # ---- pre-filter stats (always computed) ----
+            gate_pass = forged_prob >= auth_gate_forged_threshold
+            max_cls_prob = cls_probs[b].max().item() if Q > 0 else 0.0
+            num_keep = int((cls_probs[b] > cls_threshold).sum().item()) if Q > 0 else 0
+            max_mask_prob = mask_probs[b].max().item() if Q > 0 else 0.0
+
+            # any foreground pixels after mask threshold (pre-keep and post-keep)
+            any_fg_pre_keep = bool((mask_probs[b] > mask_threshold).any().item()) if Q > 0 else False
+
             # gate based directly on forged probability
-            if forged_prob < auth_gate_forged_threshold:
+            if not gate_pass:
                 outputs.append({
                     "masks": torch.zeros((0, Hm, Wm), dtype=torch.uint8, device=mask_logits.device),
                     "mask_scores": torch.empty(0, device=mask_logits.device),
                     "mask_forgery_scores": torch.empty(0, device=mask_logits.device),
                     "image_authenticity": forged_prob,
+
+                    # logging / debugging
+                    "gate_pass": gate_pass,
+                    "max_cls_prob": max_cls_prob,
+                    "num_keep": num_keep,
+                    "max_mask_prob": max_mask_prob,
+                    "any_fg_pre_keep": any_fg_pre_keep,
+                    "any_fg_post_keep": False,
                 })
                 continue
 
@@ -509,10 +537,21 @@ class Mask2FormerForgeryModel(nn.Module):
                     "mask_scores": torch.empty(0, device=mask_logits.device),
                     "mask_forgery_scores": torch.empty(0, device=mask_logits.device),
                     "image_authenticity": forged_prob,
+
+                    # logging / debugging
+                    "gate_pass": gate_pass,
+                    "max_cls_prob": max_cls_prob,
+                    "num_keep": num_keep,
+                    "max_mask_prob": max_mask_prob,
+                    "any_fg_pre_keep": any_fg_pre_keep,
+                    "any_fg_post_keep": False,
                 })
                 continue
 
-            masks_b = (mask_probs[b, keep] > mask_threshold).to(torch.uint8)
+            masks_b_bool = (mask_probs[b, keep] > mask_threshold)
+            any_fg_post_keep = bool(masks_b_bool.any().item())
+
+            masks_b = masks_b_bool.to(torch.uint8)
             scores_b = mask_probs[b, keep].flatten(1).mean(-1)
             cls_b = cls_probs[b, keep]
 
@@ -521,6 +560,14 @@ class Mask2FormerForgeryModel(nn.Module):
                 "mask_scores": scores_b,
                 "mask_forgery_scores": cls_b,
                 "image_authenticity": forged_prob,
+
+                # logging / debugging
+                "gate_pass": gate_pass,
+                "max_cls_prob": max_cls_prob,
+                "num_keep": num_keep,
+                "max_mask_prob": max_mask_prob,
+                "any_fg_pre_keep": any_fg_pre_keep,
+                "any_fg_post_keep": any_fg_post_keep,
             })
 
         return outputs
