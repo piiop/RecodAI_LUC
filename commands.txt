@@ -1,9 +1,6 @@
 # Full Baseline
 
-python -m src.cli full-train \
-  --train_authentic data/train_images/authentic \
-  --train_forged data/train_images/forged \
-  --train_masks data/train_masks \
+python -m src.cli full-train
   --epochs 25 \
   --batch_size 4 \
   --lr 1e-4 \

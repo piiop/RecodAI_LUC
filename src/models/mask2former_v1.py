@@ -312,8 +312,8 @@ class Mask2FormerForgeryModel(nn.Module):
         fpn_out_channels=256,
         authenticity_penalty_weight=5.0,
         auth_gate_forged_threshold=0.5,  
-        default_mask_threshold=0.5,      # optional, for masks
-        default_cls_threshold=0.5,       # optional, for per-query forgery
+        default_mask_threshold=0.5,
+        default_cls_threshold=0.5, 
         auth_penalty_cls_threshold=None,
         # matching weights
         cost_bce=1.0,
@@ -331,11 +331,19 @@ class Mask2FormerForgeryModel(nn.Module):
         self.mask_dim = mask_dim
         self.authenticity_penalty_weight = authenticity_penalty_weight
 
-        # matching weights
+        self.auth_gate_forged_threshold = auth_gate_forged_threshold
+        self.default_mask_threshold = default_mask_threshold
+        self.default_cls_threshold = _coerce_thresh("default_cls_threshold", default_cls_threshold)
+        self.auth_penalty_cls_threshold = _coerce_thresh(
+            "auth_penalty_cls_threshold",
+            auth_penalty_cls_threshold
+            if auth_penalty_cls_threshold is not None
+            else default_cls_threshold,
+        )
+
         self.cost_bce = cost_bce
         self.cost_dice = cost_dice
 
-        # loss weights
         self.loss_weight_mask_bce = loss_weight_mask_bce
         self.loss_weight_mask_dice = loss_weight_mask_dice
         self.loss_weight_mask_cls = loss_weight_mask_cls

@@ -28,14 +28,6 @@ from src.utils.wandb_utils import (
 def build_train_dataset(train_transform=None):
     """
     Full training dataset (same data as CV, with chosen train transform).
-
-    Expects:
-        paths: dict with keys
-            - train_authentic
-            - train_forged
-            - train_masks
-            - supp_forged (optional)
-            - supp_masks (optional)
     """
     dataset = ForgeryDataset(
         transform=train_transform,
@@ -51,7 +43,6 @@ def collate_batch(batch):
 
 
 def run_full_train(
-    paths,
     num_epochs=30,
     batch_size=4,
     lr=1e-4,
@@ -59,6 +50,7 @@ def run_full_train(
     device=None,
     train_transform=None,
     save_path="weights/full_train/model_full_data_baseline.pth",
+    model_kwargs=None,
 ):
     """
     Train Mask2FormerForgeryModel on the FULL dataset.
@@ -95,15 +87,11 @@ def run_full_train(
         persistent_workers=True 
     )
 
-    # Model
-    model = Mask2FormerForgeryModel(
-        num_queries=15,
-        d_model=256,
-        authenticity_penalty_weight=5.0,
-        auth_gate_forged_threshold=0.5,
-        default_mask_threshold=0.5,
-        default_cls_threshold=0.5,
-    ).to(device)
+    mk = {} if model_kwargs is None else dict(model_kwargs)
+    if "d_model" not in mk:
+        mk["d_model"] = 256  
+
+    model = Mask2FormerForgeryModel(**mk).to(device)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),

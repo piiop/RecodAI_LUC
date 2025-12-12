@@ -23,7 +23,6 @@ CONFIG_DIR = PROJECT_ROOT / "config"
 # Core YAML loading / merging
 # ---------------------------------------------------------------------------
 
-
 def _deep_update(base: MutableMapping[str, Any], other: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
     """
     Recursively update mapping `base` with values from `other`.
@@ -116,7 +115,6 @@ def load_and_merge_configs(
 # ---------------------------------------------------------------------------
 # CLI override handling
 # ---------------------------------------------------------------------------
-
 
 def _parse_scalar(value: str) -> Any:
     """
@@ -277,3 +275,28 @@ def build_config_from_args(args: argparse.Namespace) -> Config:
     apply_overrides(cfg_dict, overrides)
 
     return Config(cfg_dict)
+
+def get_default_model_cfg():
+    return dict(
+        num_queries=15,
+        dropout=0.1,
+        authenticity_penalty_weight=5.0,
+        auth_gate_forged_threshold=0.5,
+        default_mask_threshold=0.5,
+        default_cls_threshold=0.5,
+        auth_penalty_cls_threshold=None,
+        cost_bce=1.0,
+        cost_dice=1.0,
+        loss_weight_mask_bce=1.0,
+        loss_weight_mask_dice=1.0,
+        loss_weight_mask_cls=1.0,
+        loss_weight_img_auth=1.0,
+        loss_weight_auth_penalty=1.0,
+    )
+
+
+def build_model_cfg(user_cfg: dict | None):
+    cfg = get_default_model_cfg()
+    if user_cfg:
+        cfg.update(user_cfg)
+    return cfg

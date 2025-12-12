@@ -19,16 +19,10 @@ Example usage
 -------------
 # OOF CV run (local metric for experimentation/ablations)
 python -m src.cli cv \
-  --train_authentic /data/train_images/authentic \
-  --train_forged   /data/train_images/forged \
-  --train_masks    /data/train_masks \
   --n_folds 5 --epochs 3 --batch_size 4 --lr 1e-4
 
 # Full-data training to produce weights for Kaggle
 python -m src.cli full-train \
-  --train_authentic /data/train_images/authentic \
-  --train_forged   /data/train_images/forged \
-  --train_masks    /data/train_masks \
   --epochs 30 --batch_size 4 --lr 1e-4 \
   --save_path weights/full_train/model_full_best_oof.pth
 
@@ -49,7 +43,7 @@ from src.utils.wandb_utils import (
     log_config,
     finish_run,
 )
-
+from src.utils.config_utils import add_config_arguments, build_config_from_args
 
 # ---------------------------------------------------------------------------
 # Subcommand: CV
@@ -60,39 +54,12 @@ def _add_cv_subparser(subparsers: argparse._SubParsersAction) -> None:
         "cv",
         help="Run K-fold CV + OOF metric on local training data.",
     )
-
-    # Data paths
-    parser.add_argument(
-        "--train_authentic",
-        type=str,
-        required=True,
-        help="Path to authentic train images directory",
-    )
-    parser.add_argument(
-        "--train_forged",
-        type=str,
-        required=True,
-        help="Path to forged train images directory",
-    )
-    parser.add_argument(
-        "--train_masks",
-        type=str,
-        required=True,
-        help="Path to train masks directory",
-    )
-    parser.add_argument(
-        "--supp_forged",
-        type=str,
-        default=None,
-        help="Path to supplemental forged images (optional)",
-    )
-    parser.add_argument(
-        "--supp_masks",
-        type=str,
-        default=None,
-        help="Path to supplemental masks (optional)",
-    )
-
+    add_config_arguments(parser)
+    # Data is hardcoded. no paths
+    
+    # model config
+    parser.add_argument("--model_cfg", type=str, default=None,
+                    help="Path to yaml/json model config")
     # CV / training hyperparams (mirrors src/training/train_cv.py)
     parser.add_argument(
         "--n_folds",
@@ -148,7 +115,7 @@ def _add_cv_subparser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _run_cv_from_args(args: argparse.Namespace) -> None:
-
+    cfg = build_config_from_args(args)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device:", device)
 
@@ -157,7 +124,7 @@ def _run_cv_from_args(args: argparse.Namespace) -> None:
 
     # wandb run for this CV experiment (optional; no-op if wandb disabled)
     run = init_wandb_run(
-        config=vars(args),
+        config={**vars(args), **{"cfg": cfg.to_dict()}},
         project="mask2former-forgery",
         job_type="cv",
         group="cv",
@@ -175,6 +142,7 @@ def _run_cv_from_args(args: argparse.Namespace) -> None:
             train_transform=None,  # plug in your train/val transforms when ready
             val_transform=None,
             out_dir=args.out_dir,
+            model_kwargs=cfg.get("model", {}),
         )
     finally:
         finish_run()
@@ -190,9 +158,13 @@ def _add_full_train_subparser(subparsers: argparse._SubParsersAction) -> None:
         "full-train",
         help="Train on the full dataset and save weights for Kaggle submission.",
     )
-
+    add_config_arguments(parser)
     # Data paths hardcoded. Never need path
 
+    # Model config    
+    parser.add_argument("--model_cfg", type=str, default=None,
+                    help="Path to yaml/json model config")
+    
     # Training hyperparams (mirrors src/training/train_full.py)
     parser.add_argument(
         "--epochs",
@@ -245,25 +217,16 @@ def _add_full_train_subparser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _run_full_train_from_args(args: argparse.Namespace) -> None:
-    paths = {
-        "train_authentic": args.train_authentic,
-        "train_forged": args.train_forged,
-        "train_masks": args.train_masks,
-    }
-    if args.supp_forged is not None:
-        paths["supp_forged"] = args.supp_forged
-    if args.supp_masks is not None:
-        paths["supp_masks"] = args.supp_masks
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device:", device)
-
+    cfg = build_config_from_args(args)
     seed_info = setup_seed(args.seed, deterministic=args.deterministic)
     log_seed_info(seed_info)
 
     # wandb run for full-data training (optional; no-op if wandb disabled)
     run = init_wandb_run(
-        config=vars(args),
+        config={**vars(args), **{"cfg": cfg.to_dict()}},
         project="mask2former-forgery",
         job_type="full_train",
         group="full_train",
@@ -272,7 +235,6 @@ def _run_full_train_from_args(args: argparse.Namespace) -> None:
 
     try:
         run_full_train(
-            paths=paths,
             num_epochs=args.epochs,
             batch_size=args.batch_size,
             lr=args.lr,
@@ -280,6 +242,7 @@ def _run_full_train_from_args(args: argparse.Namespace) -> None:
             device=device,
             train_transform=None,  # plug in same train transform used in best CV
             save_path=args.save_path,
+            model_kwargs=cfg.get("model", {}),
         )
     finally:
         finish_run()

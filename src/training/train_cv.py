@@ -124,17 +124,13 @@ def run_cv(
     train_transform=None,
     val_transform=None,
     out_dir="experiments/oof_results",
+    model_cfg=None,
+    model_kwargs=None,     
 ):
     """
     Main K-fold CV + OOF routine.
 
     Args:
-        paths: dict with keys:
-            - train_authentic
-            - train_forged
-            - train_masks
-            - supp_forged (optional)
-            - supp_masks (optional)
         num_folds, num_epochs, batch_size, lr, weight_decay: training hyperparams
         device: torch.device or None (auto)
         train_transform, val_transform: optional transforms to pass to ForgeryDataset
@@ -194,14 +190,11 @@ def run_cv(
         )
 
         # Model + optimizer per fold
-        model = Mask2FormerForgeryModel(
-            num_queries=15,
-            d_model=256,
-            authenticity_penalty_weight=5.0,
-            auth_gate_forged_threshold=0.5,
-            default_mask_threshold=0.5,
-            default_cls_threshold=0.5,
-        ).to(device)
+        mk = {} if model_kwargs is None else dict(model_kwargs)  # ADD
+        if "d_model" not in mk:
+            mk["d_model"] = 256  # KEEP CURRENT DEFAULT BEHAVIOR
+
+        model = Mask2FormerForgeryModel(**mk).to(device)
 
         optimizer = torch.optim.AdamW(
             model.parameters(), lr=lr, weight_decay=weight_decay

@@ -12,9 +12,6 @@ Usage example
 -------------
 
 python -m src.inference.auth_gate_sweep \
-  --train_authentic data/train_images/authentic \
-  --train_forged   data/train_images/forged \
-  --train_masks    data/train_masks \
   --weights        weights/full_train/model_full_data_baseline.pth \
   --gates 0.3 0.4 0.5 0.6 0.7 \
   --batch_size 4 \
@@ -49,11 +46,6 @@ def build_full_dataset(paths: Dict[str, str], img_size: int = 256) -> ForgeryDat
     """
     transform = get_val_transform(img_size=img_size)
     ds = ForgeryDataset(
-        paths["train_authentic"],
-        paths["train_forged"],
-        paths["train_masks"],
-        supp_forged_path=paths.get("supp_forged"),
-        supp_masks_path=paths.get("supp_masks"),
         transform=transform,
     )
     return ds
