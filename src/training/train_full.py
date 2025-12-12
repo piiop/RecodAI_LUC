@@ -47,6 +47,13 @@ def build_train_dataset(paths, train_transform=None):
     )
     return dataset
 
+def collate_batch(batch):
+    """
+    Simple collate function for (image, target) pairs.
+    """
+    images, targets = zip(*batch)  # batch is a list of (img, target)
+    return list(images), list(targets)
+
 
 def run_full_train(
     paths,
@@ -87,7 +94,7 @@ def run_full_train(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        collate_fn=lambda x: tuple(zip(*x)),
+        collate_fn=collate_batch,
         num_workers=4,          # try 4 first; can test 8 later
         pin_memory=True,        
         persistent_workers=True 
