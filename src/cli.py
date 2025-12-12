@@ -148,15 +148,6 @@ def _add_cv_subparser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _run_cv_from_args(args: argparse.Namespace) -> None:
-    paths = {
-        "train_authentic": args.train_authentic,
-        "train_forged": args.train_forged,
-        "train_masks": args.train_masks,
-    }
-    if args.supp_forged is not None:
-        paths["supp_forged"] = args.supp_forged
-    if args.supp_masks is not None:
-        paths["supp_masks"] = args.supp_masks
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device:", device)
@@ -175,7 +166,6 @@ def _run_cv_from_args(args: argparse.Namespace) -> None:
 
     try:
         run_cv(
-            paths=paths,
             num_folds=args.n_folds,
             num_epochs=args.epochs,
             batch_size=args.batch_size,

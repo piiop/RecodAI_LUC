@@ -12,11 +12,6 @@ their OOF scores.
 Typical usage:
 
     python -m src.inference.infer_multi_configs \
-        --train_authentic /path/to/train_images/authentic \
-        --train_forged   /path/to/train_images/forged \
-        --train_masks    /path/to/train_masks \
-        --supp_forged    /path/to/supplemental_images \
-        --supp_masks     /path/to/supplemental_masks \
         --experiment baseline \
         --experiment ablation_lr
 
@@ -40,7 +35,6 @@ from src.utils.wandb_utils import init_wandb_run, log_config, finish_run
 # ---------------------------------------------------------------------------
 # Experiment presets (edit this list to define your sweeps)
 # ---------------------------------------------------------------------------
-
 
 @dataclass
 class ExperimentConfig:
@@ -89,19 +83,15 @@ EXPERIMENTS: List[ExperimentConfig] = [
     ),
 ]
 
-
 def _index_experiments() -> Dict[str, ExperimentConfig]:
     return {exp.name: exp for exp in EXPERIMENTS}
-
 
 # ---------------------------------------------------------------------------
 # Core runner
 # ---------------------------------------------------------------------------
 
-
 def run_single_experiment(
     exp: ExperimentConfig,
-    paths: Dict[str, str],
     device: torch.device,
     base_out_dir: Path,
 ) -> Dict[str, Optional[float]]:
@@ -125,7 +115,6 @@ def run_single_experiment(
             "batch_size": exp.batch_size,
             "lr": exp.lr,
             "weight_decay": exp.weight_decay,
-            "paths": paths,
         },
         project="mask2former-forgery",
         job_type="cv",
@@ -135,7 +124,6 @@ def run_single_experiment(
 
     try:
         run_cv(
-            paths=paths,
             num_folds=exp.num_folds,
             num_epochs=exp.num_epochs,
             batch_size=exp.batch_size,
@@ -269,7 +257,6 @@ def run_threshold_sweep(
 # CLI
 # ---------------------------------------------------------------------------
 
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -277,39 +264,6 @@ def parse_args() -> argparse.Namespace:
             "No Kaggle submissions are produced."
         )
     )
-
-    # Data paths (same shape as train_cv)
-    parser.add_argument(
-        "--train_authentic",
-        type=str,
-        required=True,
-        help="Path to authentic train images directory",
-    )
-    parser.add_argument(
-        "--train_forged",
-        type=str,
-        required=True,
-        help="Path to forged train images directory",
-    )
-    parser.add_argument(
-        "--train_masks",
-        type=str,
-        required=True,
-        help="Path to train masks directory",
-    )
-    parser.add_argument(
-        "--supp_forged",
-        type=str,
-        default=None,
-        help="Path to supplemental forged images (optional)",
-    )
-    parser.add_argument(
-        "--supp_masks",
-        type=str,
-        default=None,
-        help="Path to supplemental masks (optional)",
-    )
-
     # Experiment selection
     parser.add_argument(
         "--experiment",
@@ -355,16 +309,6 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    paths: Dict[str, str] = {
-        "train_authentic": args.train_authentic,
-        "train_forged": args.train_forged,
-        "train_masks": args.train_masks,
-    }
-    if args.supp_forged is not None:
-        paths["supp_forged"] = args.supp_forged
-    if args.supp_masks is not None:
-        paths["supp_masks"] = args.supp_masks
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device:", device)
 
@@ -399,7 +343,7 @@ def main() -> None:
     results: List[Dict[str, Optional[float]]] = []
     for name in selected_names:
         exp = all_exps[name]
-        res = run_single_experiment(exp, paths=paths, device=device, base_out_dir=base_out_dir)
+        res = run_single_experiment(exp, device=device, base_out_dir=base_out_dir)
         results.append(res)
 
     # Summary table
@@ -419,9 +363,6 @@ def main() -> None:
         print("\nExperiments with missing metrics:")
         for r in missing:
             print(f"  {r['name']:16s}  (check {r['out_dir']})")
-
-
-
 
 if __name__ == "__main__":
     main()

@@ -22,22 +22,11 @@ def main():
     WEIGHTS_PATH = "weights/full_train/model_full_data_baseline.pth"
     OUT_DIR = Path("experiments/cls_threshold_sweep")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    ROOT_DIR = os.environ.get("DATA_ROOT", "data")
     # --------------------
     # dataset / loader (correct ForgeryDataset usage)
     # --------------------
-    authentic_path = os.path.join(ROOT_DIR, "train_images", "authentic")
-    forged_path = os.path.join(ROOT_DIR, "train_images", "forged")
-    masks_path = os.path.join(ROOT_DIR, "train_masks")
-    supp_forged_path = os.path.join(ROOT_DIR, "supplemental_images")
-    supp_masks_path = os.path.join(ROOT_DIR, "supplemental_masks")
 
     dataset = ForgeryDataset(
-        authentic_path=authentic_path,
-        forged_path=forged_path,
-        masks_path=masks_path,
-        supp_forged_path=supp_forged_path if os.path.isdir(supp_forged_path) else None,
-        supp_masks_path=supp_masks_path if os.path.isdir(supp_masks_path) else None,
         transform=get_val_transform(img_size=256),
         is_train=False,
     )
