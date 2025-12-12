@@ -95,34 +95,19 @@ def build_solution_df(full_dataset):
     return solution_df, is_forged
 
 
-def make_datasets(paths, train_transform=None, val_transform=None):
+def make_datasets(train_transform=None, val_transform=None):
     """
     Helper to build the full_dataset (no transforms) + template train/val datasets.
     """
     full_dataset = ForgeryDataset(
-        paths["train_authentic"],
-        paths["train_forged"],
-        paths["train_masks"],
-        supp_forged_path=paths.get("supp_forged"),
-        supp_masks_path=paths.get("supp_masks"),
         transform=None,
     )
 
     ds_train = ForgeryDataset(
-        paths["train_authentic"],
-        paths["train_forged"],
-        paths["train_masks"],
-        supp_forged_path=paths.get("supp_forged"),
-        supp_masks_path=paths.get("supp_masks"),
         transform=train_transform,
     )
 
     ds_val = ForgeryDataset(
-        paths["train_authentic"],
-        paths["train_forged"],
-        paths["train_masks"],
-        supp_forged_path=paths.get("supp_forged"),
-        supp_masks_path=paths.get("supp_masks"),
         transform=val_transform,
     )
 
@@ -130,7 +115,6 @@ def make_datasets(paths, train_transform=None, val_transform=None):
 
 
 def run_cv(
-    paths,
     num_folds=5,
     num_epochs=3,
     batch_size=4,
@@ -169,7 +153,7 @@ def run_cv(
 
     # Build datasets
     full_dataset, ds_train_template, ds_val_template = make_datasets(
-        paths, train_transform=train_transform, val_transform=val_transform
+        train_transform=train_transform, val_transform=val_transform
     )
     solution_df, is_forged = build_solution_df(full_dataset)
 
@@ -199,8 +183,8 @@ def run_cv(
             shuffle=True,
             collate_fn=lambda x: tuple(zip(*x)),
             num_workers=4,          # try 4 first; can test 8 later
-            pin_memory=True,        # nicer GPU transfers
-            persistent_workers=True # keeps workers alive across epochs
+            pin_memory=True,        
+            persistent_workers=True 
         )
         val_loader = DataLoader(
             torch.utils.data.Subset(ds_val, val_idx),
@@ -420,36 +404,6 @@ def parse_args():
         description="K-fold CV + OOF training for Mask2FormerForgeryModel"
     )
     parser.add_argument(
-        "--train_authentic",
-        type=str,
-        required=True,
-        help="Path to authentic train images directory",
-    )
-    parser.add_argument(
-        "--train_forged",
-        type=str,
-        required=True,
-        help="Path to forged train images directory",
-    )
-    parser.add_argument(
-        "--train_masks",
-        type=str,
-        required=True,
-        help="Path to train masks directory",
-    )
-    parser.add_argument(
-        "--supp_forged",
-        type=str,
-        default=None,
-        help="Path to supplemental forged images (optional)",
-    )
-    parser.add_argument(
-        "--supp_masks",
-        type=str,
-        default=None,
-        help="Path to supplemental masks (optional)",
-    )
-    parser.add_argument(
         "--n_folds", type=int, default=5, help="Number of CV folds (default: 5)"
     )
     parser.add_argument(
@@ -489,19 +443,8 @@ def parse_args():
 
     return parser.parse_args()
 
-
 def main():
     args = parse_args()
-
-    paths = {
-        "train_authentic": args.train_authentic,
-        "train_forged": args.train_forged,
-        "train_masks": args.train_masks,
-    }
-    if args.supp_forged is not None:
-        paths["supp_forged"] = args.supp_forged
-    if args.supp_masks is not None:
-        paths["supp_masks"] = args.supp_masks
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device:", device)
@@ -520,7 +463,6 @@ def main():
 
     try:
         run_cv(
-            paths=paths,
             num_folds=args.n_folds,
             num_epochs=args.epochs,
             batch_size=args.batch_size,
@@ -533,8 +475,6 @@ def main():
         )
     finally:
         finish_run()
-
-
 
 if __name__ == "__main__":
     main()

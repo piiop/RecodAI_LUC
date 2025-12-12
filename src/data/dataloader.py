@@ -1,30 +1,26 @@
 """
-Dataset and dataloader utilities for the forgery segmentation task.
+Dataset + DataLoader utilities for the forgery segmentation task.
 
-Expected directory layout (per run/config):
+This project uses a FIXED on-disk layout under project_root/data/:
 
-    root/
+project_root/
+└── data/
     ├── train_images/
-    │   ├── authentic/          # authentic RGB images
-    │   └── forged/             # forged  RGB images
-    ├── train_masks/            # .npy masks, one per image (same basename)
-    ├── supplemental_images/    # (optional) extra forged images
-    └── supplemental_masks/     # (optional) extra masks for supplemental_images
+    │   ├── authentic/
+    │   └── forged/
+    ├── train_masks/             # .npy masks, one per image (same basename)
+    ├── supplemental_images/     # optional extra forged images
+    └── supplemental_masks/      # optional masks for supplemental_images
 
 Each image has a corresponding mask file:
-    <basename>.jpg/.png/...  ->  train_masks/<basename>.npy
+  <basename>.jpg/.png/... -> data/train_masks/<basename>.npy
+(or supplemental_masks for supplemental images)
 
-Minimal usage (inside your training script):
+Recommended usage:
 
-    from src.data.dataloader import (
-        ForgeryDataset,
-        get_train_transform,
-        get_val_transform,
-        create_train_val_loaders,
-    )
+    from src.data.dataloader import create_train_val_loaders
 
     train_loader, val_loader = create_train_val_loaders(
-        root_dir="/path/to/dataset/root",
         batch_size=4,
         num_workers=4,
         img_size=256,
@@ -32,14 +28,6 @@ Minimal usage (inside your training script):
         seed=42,
         use_supplemental=True,
     )
-
-    for images, targets in train_loader:
-        # images: list[Tensor(C,H,W)], already normalized
-        # targets: list[dict] with boxes, labels, masks, image_label, ...
-        ...
-
-This module is CPU-side only; CUDA usage is handled in the training loop by
-sending `images` and each `target` dict to your device.
 """
 
 import os
@@ -54,106 +42,74 @@ from albumentations.pytorch import ToTensorV2
 
 import torch
 from torch.utils.data import Dataset, DataLoader
+from pathlib import Path
 
+# project_root/src/data/dataloader.py -> project_root
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DATA_DIR = PROJECT_ROOT / "data"
+
+AUTHENTIC_DIR = DATA_DIR / "train_images" / "authentic"
+FORGED_DIR = DATA_DIR / "train_images" / "forged"
+MASKS_DIR = DATA_DIR / "train_masks"
+
+SUPP_FORGED_DIR = DATA_DIR / "supplemental_images"
+SUPP_MASKS_DIR = DATA_DIR / "supplemental_masks"
 
 class ForgeryDataset(Dataset):
     """
     Dataset for forged/authentic images with binary segmentation masks.
 
+    Data directories are FIXED to:
+      data/train_images/{authentic,forged}
+      data/train_masks
+      data/supplemental_images (optional)
+      data/supplemental_masks  (optional)
+
     Args:
-        authentic_path: Directory with authentic images.
-        forged_path: Directory with forged images.
-        masks_path: Directory with .npy masks (basenames matching image files).
-        supp_forged_path: Optional directory with supplemental forged images.
-        supp_masks_path: Optional directory with masks for supplemental images.
         transform: Albumentations transform applied to (image, mask).
         is_train: Unused flag kept for compatibility / future use.
-
-    Returns:
-        __getitem__ -> (image, target) where:
-            image: Tensor of shape (3, H, W), normalized if transform includes it.
-            target: dict with keys:
-                - boxes: FloatTensor [N, 4] (x_min, y_min, x_max, y_max)
-                - labels: LongTensor [N] (1 for forged objects)
-                - masks: UInt8Tensor [N, H, W]
-                - image_id: LongTensor [1]
-                - area: FloatTensor [N]
-                - iscrowd: LongTensor [N]
-                - image_label: FloatTensor scalar (1.0 forged, 0.0 authentic)
     """
-
     def __init__(
         self,
-        authentic_path: str,
-        forged_path: str,
-        masks_path: str,
-        supp_forged_path: Optional[str] = None,
-        supp_masks_path: Optional[str] = None,
         transform: Optional[A.BasicTransform] = None,
         is_train: bool = True,
     ) -> None:
         self.transform = transform
-        self.is_train = is_train  # reserved for future behavior toggles
-
+        self.is_train = is_train
         self.samples: List[Dict[str, Any]] = []
 
-        # Authentic images (sorted for reproducibility)
-        if os.path.isdir(authentic_path):
-            for file in sorted(os.listdir(authentic_path)):
-                img_path = os.path.join(authentic_path, file)
-                if not os.path.isfile(img_path):
-                    continue
+        # authentic
+        for file in sorted(AUTHENTIC_DIR.iterdir()):
+            if not file.is_file():
+                continue
+            base = file.stem
+            self.samples.append({
+                "image_path": str(file),
+                "mask_path": str(MASKS_DIR / f"{base}.npy"),
+                "is_forged": False,
+            })
 
-                base_name, _ = os.path.splitext(file)
-                mask_path = os.path.join(masks_path, f"{base_name}.npy")
+        # forged
+        for file in sorted(FORGED_DIR.iterdir()):
+            if not file.is_file():
+                continue
+            base = file.stem
+            self.samples.append({
+                "image_path": str(file),
+                "mask_path": str(MASKS_DIR / f"{base}.npy"),
+                "is_forged": True,
+            })
 
-                self.samples.append(
-                    {
-                        "image_path": img_path,
-                        "mask_path": mask_path,
-                        "is_forged": False,
-                        "image_id": base_name,
-                    }
-                )
-
-        # Forged images (original)
-        if os.path.isdir(forged_path):
-            for file in sorted(os.listdir(forged_path)):
-                img_path = os.path.join(forged_path, file)
-                if not os.path.isfile(img_path):
-                    continue
-
-                base_name, _ = os.path.splitext(file)
-                mask_path = os.path.join(masks_path, f"{base_name}.npy")
-
-                self.samples.append(
-                    {
-                        "image_path": img_path,
-                        "mask_path": mask_path,
-                        "is_forged": True,
-                        "image_id": base_name,
-                    }
-                )
-
-        # Supplemental forged images (all forged)
-        if supp_forged_path is not None and supp_masks_path is not None:
-            if os.path.isdir(supp_forged_path):
-                for file in sorted(os.listdir(supp_forged_path)):
-                    img_path = os.path.join(supp_forged_path, file)
-                    if not os.path.isfile(img_path):
-                        continue
-
-                    base_name, _ = os.path.splitext(file)
-                    mask_path = os.path.join(supp_masks_path, f"{base_name}.npy")
-
-                    self.samples.append(
-                        {
-                            "image_path": img_path,
-                            "mask_path": mask_path,
-                            "is_forged": True,
-                            "image_id": base_name,
-                        }
-                    )
+        # supplemental forged
+        for file in sorted(SUPP_FORGED_DIR.iterdir()):
+            if not file.is_file():
+                continue
+            base = file.stem
+            self.samples.append({
+                "image_path": str(file),
+                "mask_path": str(SUPP_MASKS_DIR / f"{base}.npy"),
+                "is_forged": True,
+            })
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -302,7 +258,6 @@ class ForgeryDataset(Dataset):
 
         return boxes_t, labels_t, masks_t
 
-
 def get_train_transform(img_size: int = 256) -> A.Compose:
     """Augmentation pipeline for training."""
     return A.Compose(
@@ -319,7 +274,6 @@ def get_train_transform(img_size: int = 256) -> A.Compose:
         ]
     )
 
-
 def get_val_transform(img_size: int = 256) -> A.Compose:
     """Evaluation/validation transform (no heavy augmentation)."""
     return A.Compose(
@@ -333,7 +287,6 @@ def get_val_transform(img_size: int = 256) -> A.Compose:
         ]
     )
 
-
 def detection_collate_fn(
     batch: List[Tuple[torch.Tensor, Dict[str, torch.Tensor]]]
 ) -> Tuple[List[torch.Tensor], List[Dict[str, torch.Tensor]]]:
@@ -345,15 +298,12 @@ def detection_collate_fn(
     images, targets = zip(*batch)
     return list(images), list(targets)
 
-
 def create_train_val_loaders(
-    root_dir: str,
     batch_size: int = 4,
     num_workers: int = 4,
     img_size: int = 256,
     val_split: float = 0.2,
     seed: int = 42,
-    use_supplemental: bool = True,
 ) -> Tuple[DataLoader, DataLoader]:
     """
     Convenience helper to build train/val DataLoaders.
@@ -370,24 +320,8 @@ def create_train_val_loaders(
     Returns:
         train_loader, val_loader
     """
-    authentic_path = os.path.join(root_dir, "train_images", "authentic")
-    forged_path = os.path.join(root_dir, "train_images", "forged")
-    masks_path = os.path.join(root_dir, "train_masks")
-
-    supp_forged_path = (
-        os.path.join(root_dir, "supplemental_images") if use_supplemental else None
-    )
-    supp_masks_path = (
-        os.path.join(root_dir, "supplemental_masks") if use_supplemental else None
-    )
-
     full_dataset = ForgeryDataset(
-        authentic_path=authentic_path,
-        forged_path=forged_path,
-        masks_path=masks_path,
-        supp_forged_path=supp_forged_path,
-        supp_masks_path=supp_masks_path,
-        transform=get_train_transform(img_size),
+        transform=get_train_transform(img_size)
     )
 
     dataset_len = len(full_dataset)

@@ -201,37 +201,7 @@ def _add_full_train_subparser(subparsers: argparse._SubParsersAction) -> None:
         help="Train on the full dataset and save weights for Kaggle submission.",
     )
 
-    # Data paths
-    parser.add_argument(
-        "--train_authentic",
-        type=str,
-        required=True,
-        help="Path to authentic train images directory",
-    )
-    parser.add_argument(
-        "--train_forged",
-        type=str,
-        required=True,
-        help="Path to forged train images directory",
-    )
-    parser.add_argument(
-        "--train_masks",
-        type=str,
-        required=True,
-        help="Path to train masks directory",
-    )
-    parser.add_argument(
-        "--supp_forged",
-        type=str,
-        default=None,
-        help="Path to supplemental forged images (optional)",
-    )
-    parser.add_argument(
-        "--supp_masks",
-        type=str,
-        default=None,
-        help="Path to supplemental masks (optional)",
-    )
+    # Data paths hardcoded. Never need path
 
     # Training hyperparams (mirrors src/training/train_full.py)
     parser.add_argument(

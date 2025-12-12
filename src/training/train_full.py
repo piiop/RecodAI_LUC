@@ -25,7 +25,7 @@ from src.utils.wandb_utils import (
     finish_run,
 )
 
-def build_train_dataset(paths, train_transform=None):
+def build_train_dataset(train_transform=None):
     """
     Full training dataset (same data as CV, with chosen train transform).
 
@@ -38,11 +38,6 @@ def build_train_dataset(paths, train_transform=None):
             - supp_masks (optional)
     """
     dataset = ForgeryDataset(
-        paths["train_authentic"],
-        paths["train_forged"],
-        paths["train_masks"],
-        supp_forged_path=paths.get("supp_forged"),
-        supp_masks_path=paths.get("supp_masks"),
         transform=train_transform,
     )
     return dataset
@@ -84,11 +79,11 @@ def run_full_train(
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Full dataset with same transforms as CV training
-    train_dataset = build_train_dataset(paths, train_transform=train_transform)
+    train_dataset = build_train_dataset(train_transform=train_transform)
 
     if train_transform is None:
         train_transform = get_train_transform()
-    train_dataset = build_train_dataset(paths, train_transform=train_transform)
+    train_dataset = build_train_dataset(train_transform=train_transform)
 
     train_loader = DataLoader(
         train_dataset,
@@ -207,36 +202,6 @@ def parse_args():
         "(for Kaggle LB submission weights)"
     )
     parser.add_argument(
-        "--train_authentic",
-        type=str,
-        required=True,
-        help="Path to authentic train images directory",
-    )
-    parser.add_argument(
-        "--train_forged",
-        type=str,
-        required=True,
-        help="Path to forged train images directory",
-    )
-    parser.add_argument(
-        "--train_masks",
-        type=str,
-        required=True,
-        help="Path to train masks directory",
-    )
-    parser.add_argument(
-        "--supp_forged",
-        type=str,
-        default=None,
-        help="Path to supplemental forged images (optional)",
-    )
-    parser.add_argument(
-        "--supp_masks",
-        type=str,
-        default=None,
-        help="Path to supplemental masks (optional)",
-    )
-    parser.add_argument(
         "--epochs",
         type=int,
         default=30,
@@ -287,16 +252,6 @@ def parse_args():
 def main():
     args = parse_args()
 
-    paths = {
-        "train_authentic": args.train_authentic,
-        "train_forged": args.train_forged,
-        "train_masks": args.train_masks,
-    }
-    if args.supp_forged is not None:
-        paths["supp_forged"] = args.supp_forged
-    if args.supp_masks is not None:
-        paths["supp_masks"] = args.supp_masks
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     seed_info = setup_seed(args.seed, deterministic=args.deterministic)
@@ -313,7 +268,6 @@ def main():
 
     try:
         run_full_train(
-            paths=paths,
             num_epochs=args.epochs,
             batch_size=args.batch_size,
             lr=args.lr,
