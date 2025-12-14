@@ -92,7 +92,7 @@ def run_full_train(
     if "d_model" not in mk:
         mk["d_model"] = 256  
 
-    mk = sanitize_model_kwargs(model_cfg)
+    mk = sanitize_model_kwargs(model_kwargs)
     model = Mask2FormerForgeryModel(
         **mk,
         backbone_trainable=False,
