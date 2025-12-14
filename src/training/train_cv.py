@@ -190,9 +190,9 @@ def run_cv(
         )
 
         # Model + optimizer per fold
-        mk = {} if model_kwargs is None else dict(model_kwargs)  # ADD
+        mk = {} if model_kwargs is None else dict(model_kwargs)
         if "d_model" not in mk:
-            mk["d_model"] = 256  # KEEP CURRENT DEFAULT BEHAVIOR
+            mk["d_model"] = 256  
 
         model = Mask2FormerForgeryModel(**mk).to(device)
 

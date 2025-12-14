@@ -17,11 +17,308 @@ import copy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+import math
 from torchvision.models import convnext_tiny, ConvNeXt_Tiny_Weights
 from torchvision.ops import FeaturePyramidNetwork
 
 from .losses_metrics import compute_losses
+
+def _get_level_start_index(spatial_shapes: torch.Tensor) -> torch.Tensor:
+    # spatial_shapes: [L, 2] (H, W)
+    level_start_index = torch.zeros((spatial_shapes.size(0),), dtype=torch.long, device=spatial_shapes.device)
+    level_start_index[1:] = torch.cumsum(spatial_shapes[:, 0] * spatial_shapes[:, 1], dim=0)[:-1]
+    return level_start_index
+
+
+def _build_reference_points(spatial_shapes: torch.Tensor, device) -> torch.Tensor:
+    """
+    Build reference points for each position in each level.
+    Returns: [1, sum(HW), 2] in normalized [0,1] coords (x,y).
+    """
+    ref_list = []
+    for (H, W) in spatial_shapes.tolist():
+        y, x = torch.meshgrid(
+            torch.linspace(0.5, H - 0.5, H, device=device),
+            torch.linspace(0.5, W - 0.5, W, device=device),
+            indexing="ij",
+        )
+        ref = torch.stack((x / W, y / H), dim=-1)  # [H, W, 2]
+        ref_list.append(ref.reshape(-1, 2))
+    return torch.cat(ref_list, dim=0).unsqueeze(0)  # [1, S, 2]
+
+
+class MSDeformAttn(nn.Module):
+    """
+    Multi-Scale Deformable Attention (encoder flavor).
+    Pure PyTorch reference implementation (grid_sample), no CUDA ops.
+    """
+    def __init__(self, d_model=256, n_heads=8, n_levels=3, n_points=4):
+        super().__init__()
+        assert d_model % n_heads == 0
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.n_levels = n_levels
+        self.n_points = n_points
+        self.d_per_head = d_model // n_heads
+
+        self.sampling_offsets = nn.Linear(d_model, n_heads * n_levels * n_points * 2)
+        self.attention_weights = nn.Linear(d_model, n_heads * n_levels * n_points)
+
+        self.value_proj = nn.Linear(d_model, d_model)
+        self.output_proj = nn.Linear(d_model, d_model)
+
+        self._reset_parameters()
+
+    def _reset_parameters(self):
+        nn.init.xavier_uniform_(self.value_proj.weight)
+        nn.init.constant_(self.value_proj.bias, 0.0)
+        nn.init.xavier_uniform_(self.output_proj.weight)
+        nn.init.constant_(self.output_proj.bias, 0.0)
+
+        nn.init.constant_(self.sampling_offsets.weight, 0.0)
+        # small radial init for offsets (like common refs)
+        thetas = torch.arange(self.n_heads, dtype=torch.float32) * (2.0 * math.pi / self.n_heads)
+        grid = torch.stack([thetas.cos(), thetas.sin()], dim=-1)  # [H,2]
+        grid = grid / grid.abs().max(dim=-1, keepdim=True).values  # normalize
+        grid = grid.view(self.n_heads, 1, 1, 2).repeat(1, self.n_levels, self.n_points, 1)
+        for p in range(self.n_points):
+            grid[:, :, p, :] *= (p + 1)
+        self.sampling_offsets.bias = nn.Parameter(grid.reshape(-1))
+
+        nn.init.constant_(self.attention_weights.weight, 0.0)
+        nn.init.constant_(self.attention_weights.bias, 0.0)
+
+    def forward(self, query, value, spatial_shapes, level_start_index, reference_points):
+        """
+        query: [B, S, C]
+        value: [B, S, C]
+        spatial_shapes: [L, 2] (H,W)
+        level_start_index: [L]
+        reference_points: [B, S, 2] in [0,1] (x,y)
+        """
+        B, S, C = query.shape
+        L = spatial_shapes.size(0)
+        assert L == self.n_levels
+
+        value = self.value_proj(value)
+        value = value.view(B, S, self.n_heads, self.d_per_head)
+
+        sampling_offsets = self.sampling_offsets(query).view(
+            B, S, self.n_heads, self.n_levels, self.n_points, 2
+        )
+        attn_weights = self.attention_weights(query).view(
+            B, S, self.n_heads, self.n_levels, self.n_points
+        )
+        attn_weights = F.softmax(attn_weights, dim=-1)
+
+        # Normalize offsets by (W,H) per level
+        spatial_shapes_f = spatial_shapes.to(query.dtype)  # [L,2]
+        # [1,1,1,L,1,2] -> (W,H) ordering for x,y
+        normalizer = torch.stack([spatial_shapes_f[:, 1], spatial_shapes_f[:, 0]], dim=-1)
+        normalizer = normalizer.view(1, 1, 1, L, 1, 2)
+
+        # reference_points: [B,S,2] -> [B,S,1,L,1,2]
+        ref = reference_points[:, :, None, :, None, :]
+        sampling_locations = ref + sampling_offsets / normalizer  # in [0,1] approx
+
+        # Sample per level via grid_sample
+        output = torch.zeros((B, S, self.n_heads, self.d_per_head), device=query.device, dtype=query.dtype)
+
+        for lvl in range(L):
+            H, W = spatial_shapes[lvl].tolist()
+            start = level_start_index[lvl].item()
+            end = start + H * W
+
+            # (B, HW, nH, d) -> (B, nH, d, H, W)
+            value_l = value[:, start:end].permute(0, 2, 3, 1).contiguous()
+            value_l = value_l.view(B, self.n_heads, self.d_per_head, H, W)
+
+            # grid_sample expects grid in [-1,1], with last dim (x,y)
+            grid = sampling_locations[:, :, :, lvl, :, :]  # [B,S,nH,nP,2] in [0,1]
+            grid = grid * 2.0 - 1.0  # -> [-1,1]
+            # reshape to sample all points: (B*nH, S*nP, 1, 2)
+            grid = grid.permute(0, 2, 1, 3, 4).contiguous()  # [B,nH,S,nP,2]
+            grid = grid.view(B * self.n_heads, S * self.n_points, 1, 2)
+
+            # sample: input (B*nH, d, H, W), grid (B*nH, outH, outW, 2)
+            sampled = F.grid_sample(
+                value_l.view(B * self.n_heads, self.d_per_head, H, W),
+                grid,
+                mode="bilinear",
+                padding_mode="zeros",
+                align_corners=False,
+            )  # [B*nH, d, S*nP, 1]
+            sampled = sampled.view(B, self.n_heads, self.d_per_head, S, self.n_points)
+            sampled = sampled.permute(0, 3, 1, 4, 2).contiguous()  # [B,S,nH,nP,d]
+
+            w = attn_weights[:, :, :, lvl, :].unsqueeze(-1)  # [B,S,nH,nP,1]
+            output = output + (sampled * w).sum(dim=3)  # sum over nP -> [B,S,nH,d]
+
+        output = output.view(B, S, C)
+        output = self.output_proj(output)
+        return output
+
+
+class MSDeformAttnEncoderLayer(nn.Module):
+    def __init__(self, d_model=256, n_heads=8, n_levels=3, n_points=4, dim_feedforward=1024, dropout=0.1):
+        super().__init__()
+        self.self_attn = MSDeformAttn(d_model, n_heads, n_levels, n_points)
+
+        self.norm1 = nn.LayerNorm(d_model)
+        self.drop1 = nn.Dropout(dropout)
+
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.drop2 = nn.Dropout(dropout)
+        self.drop_ffn = nn.Dropout(dropout)
+
+    def forward(self, src, pos, spatial_shapes, level_start_index, reference_points):
+        # src,pos: [B,S,C]
+        q = src + pos
+        src2 = self.self_attn(q, src, spatial_shapes, level_start_index, reference_points)
+        src = self.norm1(src + self.drop1(src2))
+
+        src2 = self.linear2(self.drop_ffn(F.relu(self.linear1(src))))
+        src = self.norm2(src + self.drop2(src2))
+        return src
+
+
+class MSDeformAttnEncoder(nn.Module):
+    def __init__(self, layer, num_layers):
+        super().__init__()
+        self.layers = nn.ModuleList([layer if i == 0 else type(layer)(**layer.__dict__["_modules"] == {} and {}) for i in range(num_layers)])
+        # NOTE: above line is brittle; we’ll use deepcopy instead:
+        self.layers = nn.ModuleList([torch.nn.modules.module.deepcopy(layer) for _ in range(num_layers)])
+
+    def forward(self, src, pos, spatial_shapes, level_start_index, reference_points):
+        out = src
+        for l in self.layers:
+            out = l(out, pos, spatial_shapes, level_start_index, reference_points)
+        return out
+
+
+class Mask2FormerPixelDecoder(nn.Module):
+    """
+    Pixel decoder:
+    - takes 4 FPN levels [P2,P3,P4,P5] (high->low res)
+    - builds 3 levels for deformable encoder (P3,P4,P5 by default)
+    - runs MSDeformAttn encoder
+    - top-down fuses into high-res mask_features at P2 resolution
+    Returns:
+      memory_feats: list of 3 tensors for transformer decoder (high->low res)
+      mask_features: [B, mask_dim, H2, W2]
+    """
+    def __init__(
+        self,
+        in_channels=256,
+        conv_dim=256,
+        mask_dim=256,
+        n_levels=3,              # encoder levels
+        n_heads=8,
+        n_points=4,
+        enc_layers=6,
+        dim_feedforward=1024,
+        dropout=0.1,
+    ):
+        super().__init__()
+        self.conv_dim = conv_dim
+        self.mask_dim = mask_dim
+        self.n_levels = n_levels
+
+        # project all 4 FPN levels to conv_dim
+        self.input_proj = nn.ModuleList([nn.Conv2d(in_channels, conv_dim, 1) for _ in range(4)])
+
+        # level embeddings for encoder levels (P3,P4,P5)
+        self.level_embed = nn.Parameter(torch.Tensor(n_levels, conv_dim))
+        nn.init.normal_(self.level_embed, std=0.02)
+
+        enc_layer = MSDeformAttnEncoderLayer(
+            d_model=conv_dim,
+            n_heads=n_heads,
+            n_levels=n_levels,
+            n_points=n_points,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+        )
+        self.encoder = nn.ModuleList([torch.nn.modules.module.deepcopy(enc_layer) for _ in range(enc_layers)])
+
+        # top-down fusion convs (P5->P4->P3->P2)
+        self.lateral_convs = nn.ModuleList([
+            nn.Conv2d(conv_dim, conv_dim, 1),  # P3
+            nn.Conv2d(conv_dim, conv_dim, 1),  # P4
+            nn.Conv2d(conv_dim, conv_dim, 1),  # P5
+        ])
+        self.output_convs = nn.ModuleList([
+            nn.Sequential(nn.Conv2d(conv_dim, conv_dim, 3, padding=1), nn.ReLU(inplace=True)),
+            nn.Sequential(nn.Conv2d(conv_dim, conv_dim, 3, padding=1), nn.ReLU(inplace=True)),
+            nn.Sequential(nn.Conv2d(conv_dim, conv_dim, 3, padding=1), nn.ReLU(inplace=True)),
+        ])
+
+        self.mask_out = nn.Conv2d(conv_dim, mask_dim, 1)
+
+    def forward(self, fpn_feats, pos_encoding_fn):
+        """
+        fpn_feats: [P2,P3,P4,P5] (high->low res)
+        pos_encoding_fn: callable that returns [B,C,H,W] pos enc for a feature map
+        """
+        p2, p3, p4, p5 = [proj(f) for proj, f in zip(self.input_proj, fpn_feats)]
+
+        # encoder levels: use P3,P4,P5 (3 levels)
+        enc_feats = [p3, p4, p5]
+        B = p3.size(0)
+
+        spatial_shapes = torch.tensor([(f.size(2), f.size(3)) for f in enc_feats], device=p3.device, dtype=torch.long)  # [L,2]
+        level_start_index = _get_level_start_index(spatial_shapes)  # [L]
+        reference_points = _build_reference_points(spatial_shapes, device=p3.device).repeat(B, 1, 1)  # [B,S,2]
+
+        # flatten + add level embeddings
+        src_list = []
+        pos_list = []
+        for lvl, feat in enumerate(enc_feats):
+            pos = pos_encoding_fn(feat)  # [B,C,H,W]
+            H, W = feat.shape[-2:]
+            src = feat.flatten(2).transpose(1, 2)  # [B,HW,C]
+            pos = pos.flatten(2).transpose(1, 2)  # [B,HW,C]
+            pos = pos + self.level_embed[lvl].view(1, 1, -1)
+            src_list.append(src)
+            pos_list.append(pos)
+
+        src = torch.cat(src_list, dim=1)  # [B,S,C]
+        pos = torch.cat(pos_list, dim=1)  # [B,S,C]
+
+        # deformable encoder
+        out = src
+        for layer in self.encoder:
+            out = layer(out, pos, spatial_shapes, level_start_index, reference_points)
+
+        # split back into levels
+        outs = []
+        cursor = 0
+        for (H, W) in spatial_shapes.tolist():
+            n = H * W
+            o = out[:, cursor:cursor+n, :].transpose(1, 2).contiguous().view(B, self.conv_dim, H, W)
+            outs.append(o)
+            cursor += n
+
+        # memory feats for transformer decoder: return high->low res (P3,P4,P5)
+        mem_p3, mem_p4, mem_p5 = outs[0], outs[1], outs[2]
+        memory_feats = [mem_p3, mem_p4, mem_p5]
+
+        # top-down fusion into P2-sized mask feature
+        # start from mem_p5 -> mem_p4 -> mem_p3, then fuse into p2
+        x5 = self.lateral_convs[2](mem_p5)
+        x4 = self.lateral_convs[1](mem_p4) + F.interpolate(x5, size=mem_p4.shape[-2:], mode="bilinear", align_corners=False)
+        x4 = self.output_convs[1](x4)
+
+        x3 = self.lateral_convs[0](mem_p3) + F.interpolate(x4, size=mem_p3.shape[-2:], mode="bilinear", align_corners=False)
+        x3 = self.output_convs[0](x3)
+
+        # fuse into P2 (projected p2) as final high-res feature
+        x2 = p2 + F.interpolate(x3, size=p2.shape[-2:], mode="bilinear", align_corners=False)
+        mask_features = self.mask_out(x2)  # [B, mask_dim, H2, W2]
+
+        return memory_feats, mask_features
 
 class ConvNeXtFPNBackbone(nn.Module):
     """
@@ -197,7 +494,6 @@ class DetrTransformerDecoder(nn.Module):
         # [1, Q, B, C] to match DETR-style interface
         return output.unsqueeze(0)
 
-
 class SimpleTransformerDecoder(nn.Module):
     def __init__(
         self,
@@ -296,13 +592,21 @@ class Mask2FormerForgeryModel(nn.Module):
     """
     Instance-Seg Transformer (Mask2Former-style) + Authenticity Gate baseline.
     """
+
+    @staticmethod
+    def _coerce_thresh(name, value, default=0.5):
+        if value is None:
+            print(f"[Warning] `{name}` was None — coercing to default={default}.")
+            return default
+        return value
+
     def __init__(
         self,
         num_queries=15,
         d_model=256,
         nhead=8,
         num_decoder_layers=6,
-        mask_dim=256,        
+        mask_dim=256,
         dim_feedforward=2048,
         dropout=0.1,
         activation="relu",
@@ -311,9 +615,9 @@ class Mask2FormerForgeryModel(nn.Module):
         backbone_trainable=True,
         fpn_out_channels=256,
         authenticity_penalty_weight=5.0,
-        auth_gate_forged_threshold=0.5,  
+        auth_gate_forged_threshold=0.5,
         default_mask_threshold=0.5,
-        default_cls_threshold=0.5, 
+        default_cls_threshold=0.5,
         auth_penalty_cls_threshold=None,
         # matching weights
         cost_bce=1.0,
@@ -326,39 +630,61 @@ class Mask2FormerForgeryModel(nn.Module):
         loss_weight_auth_penalty=1.0,
     ):
         super().__init__()
+
+        # -----------------------------
+        # Core config
+        # -----------------------------
         self.num_queries = num_queries
         self.d_model = d_model
         self.mask_dim = mask_dim
         self.authenticity_penalty_weight = authenticity_penalty_weight
 
+        # -----------------------------
+        # Thresholds (validated / coerced)
+        # -----------------------------
         self.auth_gate_forged_threshold = auth_gate_forged_threshold
         self.default_mask_threshold = default_mask_threshold
-        self.default_cls_threshold = _coerce_thresh("default_cls_threshold", default_cls_threshold)
-        self.auth_penalty_cls_threshold = _coerce_thresh(
+        self.default_cls_threshold = self._coerce_thresh(
+            "default_cls_threshold", default_cls_threshold
+        )
+        self.auth_penalty_cls_threshold = self._coerce_thresh(
             "auth_penalty_cls_threshold",
             auth_penalty_cls_threshold
             if auth_penalty_cls_threshold is not None
             else default_cls_threshold,
         )
 
+        # -----------------------------
+        # Matching weights
+        # -----------------------------
         self.cost_bce = cost_bce
         self.cost_dice = cost_dice
 
+        # -----------------------------
+        # Loss weights
+        # -----------------------------
         self.loss_weight_mask_bce = loss_weight_mask_bce
         self.loss_weight_mask_dice = loss_weight_mask_dice
         self.loss_weight_mask_cls = loss_weight_mask_cls
         self.loss_weight_img_auth = loss_weight_img_auth
         self.loss_weight_auth_penalty = loss_weight_auth_penalty
 
+        # -----------------------------
         # Backbone + FPN
+        # -----------------------------
         self.backbone = ConvNeXtFPNBackbone(
             backbone_name=backbone_name,
             pretrained=pretrained_backbone,
-            fpn_out_channels=d_model,      # typically equal to transformer dim
+            fpn_out_channels=fpn_out_channels,
             train_backbone=backbone_trainable,
         )
-        # Transformer decoder
-        self.position_encoding = PositionEmbeddingSine(d_model // 2, normalize=True)
+
+        # -----------------------------
+        # Transformer decoder + positional enc
+        # -----------------------------
+        self.position_encoding = PositionEmbeddingSine(
+            fpn_out_channels // 2, normalize=True
+        )
         self.transformer_decoder = SimpleTransformerDecoder(
             d_model=d_model,
             nhead=nhead,
@@ -370,14 +696,30 @@ class Mask2FormerForgeryModel(nn.Module):
             return_intermediate=True,
         )
 
-        # Pixel decoder: project highest-res FPN level to mask feature space
-        self.mask_feature_proj = nn.Conv2d(d_model, mask_dim, kernel_size=1)
+        # -----------------------------
+        # Pixel decoder / mask feature projection
+        # -----------------------------
+        self.pixel_decoder = Mask2FormerPixelDecoder(
+            in_channels=fpn_out_channels,   # 256 from your FPN
+            conv_dim=d_model,               # 256
+            mask_dim=mask_dim,              # 256
+            n_levels=3,                     # use P3,P4,P5 for deform encoder
+            n_heads=nhead,
+            n_points=4,
+            enc_layers=6,                   # typical
+            dim_feedforward=1024,
+            dropout=dropout,
+        )
 
+        # -----------------------------
         # Instance heads
+        # -----------------------------
         self.class_head = nn.Linear(d_model, 1)  # forgery vs ignore, per query
         self.mask_embed_head = nn.Linear(d_model, mask_dim)
 
-        # Image-level authenticity head (global pooled high-level feat)
+        # -----------------------------
+        # Image-level authenticity head
+        # -----------------------------
         self.img_head = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
@@ -385,22 +727,7 @@ class Mask2FormerForgeryModel(nn.Module):
             nn.ReLU(inplace=True),
             nn.Linear(d_model, 1),
         )
-        # Validate / coerce thresholds
-        def _coerce_thresh(name, value, default=0.5):
-            if value is None:
-                print(f"[Warning] `{name}` was None — coercing to default={default}.")
-                return default
-            return value
-        # Thresholds
-        self.auth_gate_forged_threshold = auth_gate_forged_threshold
-        self.default_mask_threshold = default_mask_threshold
-        self.default_cls_threshold = _coerce_thresh(
-            "default_cls_threshold", default_cls_threshold
-        )
-        self.auth_penalty_cls_threshold = _coerce_thresh(
-            "auth_penalty_cls_threshold",
-            auth_penalty_cls_threshold if auth_penalty_cls_threshold is not None else default_cls_threshold
-        )
+
 
     def forward(self, images, targets=None, inference_overrides=None):
         """
@@ -412,13 +739,16 @@ class Mask2FormerForgeryModel(nn.Module):
 
         B = images.shape[0]
 
-        # Backbone + FPN
         fpn_feats = self.backbone(images)  # [P2, P3, P4, P5]
-        mask_feats = self.mask_feature_proj(fpn_feats[0])  # [B, mask_dim, Hm, Wm]
-        pos_list = [self.position_encoding(x) for x in fpn_feats]
 
-        # Transformer on multi-scale features
-        hs_all = self.transformer_decoder(fpn_feats, pos_list)  # [num_layers, B, Q, C]
+        # Mask2Former pixel decoder produces:
+        # - memory_feats: [P3,P4,P5] (for transformer decoder)
+        # - mask_feats: high-res mask features at P2 resolution
+        memory_feats, mask_feats = self.pixel_decoder(fpn_feats, self.position_encoding)
+
+        pos_list = [self.position_encoding(x) for x in memory_feats]
+        hs_all = self.transformer_decoder(memory_feats, pos_list)  # [num_layers, B, Q, C]
+
         hs = hs_all[-1]  # [B, Q, C]
 
         # Heads
@@ -465,9 +795,9 @@ class Mask2FormerForgeryModel(nn.Module):
             images = torch.stack(images, dim=0)
 
         fpn_feats = self.backbone(images)
-        mask_feats = self.mask_feature_proj(fpn_feats[0])
-        pos_list = [self.position_encoding(x) for x in fpn_feats]
-        hs = self.transformer_decoder(fpn_feats, pos_list)[-1]
+        memory_feats, mask_feats = self.pixel_decoder(fpn_feats, self.position_encoding)
+        pos_list = [self.position_encoding(x) for x in memory_feats]
+        hs = self.transformer_decoder(memory_feats, pos_list)[-1]
 
         class_logits = self.class_head(hs).squeeze(-1)  # [B,Q]
         mask_embeddings = self.mask_embed_head(hs)       # [B,Q,C]

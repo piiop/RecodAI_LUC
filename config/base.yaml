@@ -4,14 +4,6 @@ experiment:
   name: baseline
   seed: 42
 
-paths:
-  # Set these once for your machine; scripts can read from here or be overridden via CLI.
-  train_authentic: /path/to/train_images/authentic
-  train_forged: /path/to/train_images/forged
-  train_masks: /path/to/train_masks
-  supp_forged: null          # set to /path/to/supplemental_images if used
-  supp_masks: null           # set to /path/to/supplemental_masks if used
-
 data:
   img_size: 256              # for get_train_transform / get_val_transform
   use_supplemental: true
@@ -54,7 +46,7 @@ trainer:
     out_dir: experiments/oof_results
 
   full:
-    epochs: 30
+    epochs: 25
     batch_size: 4
     lr: 1.0e-4
     weight_decay: 1.0e-4

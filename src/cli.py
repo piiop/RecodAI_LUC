@@ -31,6 +31,7 @@ and load it into Mask2FormerForgeryModel before running test inference.
 """
 
 import argparse
+import subprocess
 from pathlib import Path
 
 import torch
@@ -115,6 +116,8 @@ def _add_cv_subparser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _run_cv_from_args(args: argparse.Namespace) -> None:
+    if getattr(args, "model_cfg", None):
+        args.config = (getattr(args, "config", None) or []) + [args.model_cfg]
     cfg = build_config_from_args(args)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device:", device)
@@ -217,7 +220,8 @@ def _add_full_train_subparser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _run_full_train_from_args(args: argparse.Namespace) -> None:
-
+    if getattr(args, "model_cfg", None):
+        args.config = (getattr(args, "config", None) or []) + [args.model_cfg]
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device:", device)
     cfg = build_config_from_args(args)
@@ -271,12 +275,21 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    if args.command == "cv":
-        _run_cv_from_args(args)
-    elif args.command == "full-train":
-        _run_full_train_from_args(args)
-    else:
-        raise ValueError(f"Unknown command: {args.command}")
+     if args.cmd == "train_full":
+         run_python(
+             "train_full.py",
++            cfg,
++            model_kwargs=build_model_cfg(cfg.get("model", {})),
+         )
+     elif args.cmd == "train_cv":
+         run_python(
+             "train_cv.py",
+-            cfg, model_kwargs=cfg.get("model", {}),
++            cfg,
++            model_kwargs=build_model_cfg(cfg.get("model", {})),
+         )
+     else:
+         raise ValueError(f"Unknown command: {args.cmd}")
 
 
 if __name__ == "__main__":
