@@ -18,6 +18,7 @@ The workflow supports:
 project_root/
 ├── README.md
 ├── prompts.txt
+├── commands.text
 ├── config/
 │   ├── base.yaml
 │   ├── best_oof.yaml

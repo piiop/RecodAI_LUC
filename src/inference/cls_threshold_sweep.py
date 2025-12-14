@@ -3,7 +3,7 @@
 import torch
 from pathlib import Path
 from torch.utils.data import DataLoader
-import os
+
 from src.data.dataloader import (
     ForgeryDataset,
     get_val_transform,
@@ -11,72 +11,82 @@ from src.data.dataloader import (
 )
 from src.models.mask2former_v1 import Mask2FormerForgeryModel
 from src.inference.infer_multi_configs import run_threshold_sweep
+from src.utils.config_utils import load_yaml
 
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # --------------------
-    # paths
-    # --------------------
-    WEIGHTS_PATH = "weights/full_train/model_full_data_baseline.pth"
-    OUT_DIR = Path("experiments/cls_threshold_sweep")
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    # --------------------
-    # dataset / loader (correct ForgeryDataset usage)
-    # --------------------
+    # ------------------------------------------------------------------
+    # config
+    # ------------------------------------------------------------------
+    CFG_PATH = "base.yaml"
+    cfg = load_yaml(CFG_PATH)
 
+    model_cfg = cfg.get("model", {})
+    data_cfg = cfg.get("data", {})
+    trainer_cfg = cfg.get("trainer", {})
+
+    # ------------------------------------------------------------------
+    # paths
+    # ------------------------------------------------------------------
+    weights_path = trainer_cfg.get(
+        "save_path",
+        "weights/full_train/model_full_data_baseline.pth",
+    )
+
+    out_dir = Path("experiments/cls_threshold_sweep")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # dataset / loader
+    # ------------------------------------------------------------------
     dataset = ForgeryDataset(
-        transform=get_val_transform(img_size=256),
+        transform=get_val_transform(img_size=data_cfg.get("img_size", 256)),
         is_train=False,
     )
 
-    loader = torch.utils.data.DataLoader(
+    loader = DataLoader(
         dataset,
-        batch_size=4,
+        batch_size=trainer_cfg.get("batch_size", 4),
         shuffle=False,
         num_workers=4,
         pin_memory=True,
-        collate_fn=detection_collate_fn,  # IMPORTANT: list-of-images/list-of-targets
+        collate_fn=detection_collate_fn,
         persistent_workers=True,
     )
 
-    # --------------------
-    # model
-    # --------------------
+    # ------------------------------------------------------------------
+    # model (config-driven)
+    # ------------------------------------------------------------------
     model = Mask2FormerForgeryModel(
-        num_queries=15,
-        d_model=256,
-        backbone_trainable=False,
-        authenticity_penalty_weight=5.0,
-        auth_gate_forged_threshold=-1.0,  # disabled
-        default_mask_threshold=0.5,
-        default_cls_threshold=0.5,
+        **model_cfg,
+        backbone_trainable=False,            # inference-safe override
+        auth_gate_forged_threshold=-1.0,     # disabled during sweep
     ).to(device)
 
-    state = torch.load(WEIGHTS_PATH, map_location=device)
+    state = torch.load(weights_path, map_location=device)
     model.load_state_dict(state)
     model.eval()
 
-    # --------------------
-    # sweep config
-    # --------------------
+    # ------------------------------------------------------------------
+    # sweep definition
+    # ------------------------------------------------------------------
     cls_thresholds = [0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 
-    # gate fixed to disabled, mask threshold fixed
-    df_rows, df_agg = run_threshold_sweep(
+    run_threshold_sweep(
         model=model,
         loader=loader,
         device=device,
         gates=[-1.0],
         cls_thresholds=cls_thresholds,
-        mask_thresholds=[0.5],
-        out_csv_path=OUT_DIR / "cls_threshold_sweep.csv",
+        mask_thresholds=[model_cfg.get("default_mask_threshold", 0.5)],
+        out_csv_path=out_dir / "cls_threshold_sweep.csv",
     )
 
     print("Saved:")
-    print(OUT_DIR / "cls_threshold_sweep.csv")
-    print(OUT_DIR / "cls_threshold_sweep_agg.csv")
+    print(out_dir / "cls_threshold_sweep.csv")
+    print(out_dir / "cls_threshold_sweep_agg.csv")
 
 
 if __name__ == "__main__":

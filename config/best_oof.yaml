@@ -13,12 +13,11 @@ trainer:
     weight_decay: 1.0e-4
 
   full:
-    epochs: 30
+    epochs: 25
     batch_size: 4
     lr: 3.0e-4
     weight_decay: 1.0e-4
     save_path: weights/full_train/model_full_best_oof.pth
 
 model:
-  # Example tweak – update to match the actual best config you discover.
   num_queries: 20

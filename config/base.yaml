@@ -1,15 +1,16 @@
-# Global default config for local CV + full-train
+# Global default config for CV + full-train
 
 experiment:
   name: baseline
-  seed: 42
 
 data:
-  img_size: 256              # for get_train_transform / get_val_transform
+  img_size: 256
   use_supplemental: true
 
 model:
   type: mask2former_v1
+
+  # Transformer
   num_queries: 15
   d_model: 256
   nhead: 8
@@ -18,17 +19,20 @@ model:
   dropout: 0.1
   activation: relu
 
+  # Backbone
   backbone_name: convnext_tiny
   pretrained_backbone: true
   backbone_trainable: true
   fpn_out_channels: 256
 
+  # Thresholds / penalties
   authenticity_penalty_weight: 5.0
   auth_gate_forged_threshold: 0.5
   default_mask_threshold: 0.5
   default_cls_threshold: 0.5
   auth_penalty_cls_threshold: 0.5
 
+  # Loss weights
   loss_weights:
     mask_bce: 1.0
     mask_dice: 1.0
@@ -37,25 +41,20 @@ model:
     auth_penalty: 1.0
 
 trainer:
-  cv:
-    n_folds: 5
-    epochs: 3
-    batch_size: 4
-    lr: 1.0e-4
-    weight_decay: 1.0e-4
-    out_dir: experiments/oof_results
+  # Used by BOTH cv and full-train
+  epochs: 3              # override for full-train via -c or -o
+  batch_size: 4
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
 
-  full:
-    epochs: 25
-    batch_size: 4
-    lr: 1.0e-4
-    weight_decay: 1.0e-4
-    save_path: weights/full_train/model_full_data_baseline.pth
+  # CV-only
+  n_folds: 5
+  out_dir: experiments/oof_results
+
+  # Full-train-only
+  save_path: weights/full_train/model_full_data_baseline.pth
 
 wandb:
   project: mask2former-forgery
-  entity: null          # optional
-  mode: online          # "online", "offline", or "disabled"
-  group_names:
-    cv: cv
-    full_train: full_train
+  entity: null
+  mode: online
