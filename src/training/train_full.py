@@ -95,7 +95,6 @@ def run_full_train(
     mk = sanitize_model_kwargs(model_kwargs)
     model = Mask2FormerForgeryModel(
         **mk,
-        auth_gate_forged_threshold=-1.0,
     ).to(device)
 
     optimizer = torch.optim.AdamW(

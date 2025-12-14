@@ -62,7 +62,6 @@ def main():
     mk = sanitize_model_kwargs(model_cfg)
     model = Mask2FormerForgeryModel(
         **mk,
-        auth_gate_forged_threshold=-1.0,
     ).to(device)
 
     state = torch.load(weights_path, map_location=device)
