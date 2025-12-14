@@ -24,7 +24,7 @@ from src.models.kaggle_metric import score as kaggle_score
 from src.inference.postprocess import rle_encode
 from src.training.train_cv import build_solution_df
 from src.utils.seed_logging_utils import setup_seed
-from src.utils.config_utils import add_config_arguments, build_config_from_args
+from src.utils.config_utils import add_config_arguments, build_config_from_args, sanitize_model_kwargs
 
 
 # ---------------------------------------------------------------------
@@ -37,7 +37,12 @@ def build_dataset(img_size: int) -> ForgeryDataset:
 
 
 def load_model(weights: str, model_cfg: dict, device: torch.device):
-    model = Mask2FormerForgeryModel(**model_cfg).to(device)
+    mk = sanitize_model_kwargs(model_cfg)
+    model = Mask2FormerForgeryModel(
+    **mk,
+    backbone_trainable=False,
+    auth_gate_forged_threshold=-1.0,
+    ).to(device)
     state = torch.load(weights, map_location=device)
     model.load_state_dict(state)
     model.eval()

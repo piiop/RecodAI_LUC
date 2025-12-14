@@ -11,7 +11,7 @@ from src.data.dataloader import (
 )
 from src.models.mask2former_v1 import Mask2FormerForgeryModel
 from src.inference.infer_multi_configs import run_threshold_sweep
-from src.utils.config_utils import load_yaml
+from src.utils.config_utils import load_yaml, sanitize_model_kwargs
 
 
 def main():
@@ -59,10 +59,11 @@ def main():
     # ------------------------------------------------------------------
     # model (config-driven)
     # ------------------------------------------------------------------
+    mk = sanitize_model_kwargs(model_cfg)
     model = Mask2FormerForgeryModel(
-        **model_cfg,
-        backbone_trainable=False,            # inference-safe override
-        auth_gate_forged_threshold=-1.0,     # disabled during sweep
+        **mk,
+        backbone_trainable=False,
+        auth_gate_forged_threshold=-1.0,
     ).to(device)
 
     state = torch.load(weights_path, map_location=device)

@@ -1,8 +1,7 @@
 # Full Baseline
 
-python -m src.cli full-train
-  --epochs 25 \
-  --batch_size 4 \
-  --lr 1e-4 \
-  --weight_decay 1e-4 \
-  --save_path weights/full_train/model_full_data_baseline.pth
+python -m src.cli full-train -c base.yaml
+
+# OOF CV Run
+
+python -m src.cli cv -c base.yaml
