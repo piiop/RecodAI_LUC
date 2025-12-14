@@ -39,6 +39,7 @@ from src.utils.wandb_utils import (
     log_best_metric,
     finish_run,
 )
+from src.utils.config_utils import sanitize_model_kwargs
 
 
 def build_solution_df(full_dataset):
@@ -194,7 +195,12 @@ def run_cv(
         if "d_model" not in mk:
             mk["d_model"] = 256  
 
-        model = Mask2FormerForgeryModel(**mk).to(device)
+        mk = sanitize_model_kwargs(model_cfg)
+        model = Mask2FormerForgeryModel(
+            **mk,
+            backbone_trainable=False,
+            auth_gate_forged_threshold=-1.0,
+        ).to(device)
 
         optimizer = torch.optim.AdamW(
             model.parameters(), lr=lr, weight_decay=weight_decay
