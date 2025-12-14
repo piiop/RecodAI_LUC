@@ -241,7 +241,7 @@ class Mask2FormerPixelDecoder(nn.Module):
             dim_feedforward=dim_feedforward,
             dropout=dropout,
         )
-        self.encoder = nn.ModuleList([torch.nn.modules.module.deepcopy(enc_layer) for _ in range(enc_layers)])
+        self.encoder = nn.ModuleList([copy.deepcopy(enc_layer) for _ in range(enc_layers)])
 
         # top-down fusion convs (P5->P4->P3->P2)
         self.lateral_convs = nn.ModuleList([
@@ -270,7 +270,9 @@ class Mask2FormerPixelDecoder(nn.Module):
 
         spatial_shapes = torch.tensor([(f.size(2), f.size(3)) for f in enc_feats], device=p3.device, dtype=torch.long)  # [L,2]
         level_start_index = _get_level_start_index(spatial_shapes)  # [L]
-        reference_points = _build_reference_points(spatial_shapes, device=p3.device).repeat(B, 1, 1)  # [B,S,2]
+        ref = _build_reference_points(spatial_shapes, device=p3.device)  # [1, S, 2]
+        L = spatial_shapes.size(0)
+        reference_points = ref.unsqueeze(2).repeat(B, 1, L, 1)  # [B, S, L, 2]
 
         # flatten + add level embeddings
         src_list = []
