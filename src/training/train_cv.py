@@ -198,7 +198,6 @@ def run_cv(
         mk = sanitize_model_kwargs(model_cfg)
         model = Mask2FormerForgeryModel(
             **mk,
-            backbone_trainable=False,
             auth_gate_forged_threshold=-1.0,
         ).to(device)
 
