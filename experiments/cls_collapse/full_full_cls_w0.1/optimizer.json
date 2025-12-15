@@ -1,0 +1,27 @@
+{
+  "total_params_in_optimizer": 46848034,
+  "keywords": {
+    "img_head": {
+      "present": true,
+      "params": 66049,
+      "examples": [
+        "img_head.2.weight",
+        "img_head.2.bias",
+        "img_head.4.weight"
+      ]
+    },
+    "class_head": {
+      "present": true,
+      "params": 257,
+      "examples": [
+        "class_head.weight",
+        "class_head.bias"
+      ]
+    },
+    "gate": {
+      "present": false,
+      "params": 0,
+      "examples": []
+    }
+  }
+}

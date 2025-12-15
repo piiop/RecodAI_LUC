@@ -20,3 +20,10 @@ for w in 0.0 0.1 0.25 0.5 1.0 2.0; do
     -o trainer.name=full_cls_w$w \
     -o trainer.save_path=weights/full_train/full_cls_w$w.pth
 done
+
+# full train with loss_weight_mask_cls=0.25
+python -m src.cli full-train -c base.yaml \
+  -o trainer.epochs=25 \
+  -o model.loss_weight_mask_cls=0.25 \
+  -o trainer.name=full_cls_w0.25 \
+  -o trainer.save_path=weights/full_train/full_cls_w0.25.pth
