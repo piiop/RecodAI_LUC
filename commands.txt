@@ -1,29 +1,63 @@
-# Full Baseline
+# =========================
+# FULL RUNS (baseline/full)
+# =========================
 
+# Full baseline training
 python -m src.cli full-train -c base.yaml
 
-# OOF CV Run
-
-python -m src.cli cv -c base.yaml
-
-python -m src.cli full-train \
-  -c base.yaml \
-  -o trainer.epochs=1 \
-  -o trainer.batch_size=1
-
-#   sweep loss_weight_mask_cls
-
-for w in 0.0 0.1 0.25 0.5 1.0 2.0; do
-  python -m src.cli full-train -c base.yaml \
-    -o trainer.epochs=5 \
-    -o model.loss_weight_mask_cls=$w \
-    -o trainer.name=full_cls_w$w \
-    -o trainer.save_path=weights/full_train/full_cls_w$w.pth
-done
-
-# full train with loss_weight_mask_cls=0.25
+# Full train (fixed setting): loss_weight_mask_cls=0.25
 python -m src.cli full-train -c base.yaml \
   -o trainer.epochs=25 \
   -o model.loss_weight_mask_cls=0.25 \
   -o trainer.name=full_cls_w0.25 \
   -o trainer.save_path=weights/full_train/full_cls_w0.25.pth
+
+
+# =================
+# OOF + CV RUNS
+# =================
+
+# OOF CV run
+python -m src.cli cv -c base.yaml
+
+
+# =========================
+# MINI SMOKE RUNS (fast)
+# =========================
+
+# Full-train smoke (1 epoch, batch size 1)
+python -m src.cli full-train \
+  -c base.yaml \
+  -o trainer.epochs=1 \
+  -o trainer.batch_size=1
+
+
+# ======
+# SWEEPS
+# ======
+
+# Sweep: loss_weight_mask_cls (short full-train runs)
+
+for w in 0.0 0.1 0.25 0.5 1.0 2.0; do
+  python -m src.cli full-train -c base.yaml \
+    -o trainer.epochs=20 \
+    -o model.loss_weight_mask_cls=$w \
+    -o trainer.name=full_cls_w$w \
+    -o trainer.save_path=weights/full_train/full_cls_w$w.pth
+done
+
+# Sweep: auth gate thresholds (inference sweep)
+
+python -m src.inference.auth_gate_sweep \
+  -c base.yaml \
+  --weights weights/full_train/full_cls_w0.25.pth \
+  --gates 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 \
+  --out_dir experiments/auth_gate_sweep/full_cls_w0.25
+
+# Sweep: cls_threshold_sweep
+
+python -m src.inference.cls_threshold_sweep \
+  -c base.yaml \
+  --weights weights/full_train/full_cls_w0.25.pth \
+  --cls_thresholds 0.05 0.1 0.15 0.2 0.25 0.3 0.4 \
+  --out_dir experiments/cls_thresh_w0.25

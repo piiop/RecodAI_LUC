@@ -43,8 +43,6 @@ def collect_optimizer_debug(model, optimizer, keywords=("img_head", "class_head"
         }
     return out
 
-
-
 def build_train_dataset(train_transform=None):
     """
     Full training dataset (same data as CV, with chosen train transform).
@@ -60,7 +58,6 @@ def collate_batch(batch):
     """
     images, targets = zip(*batch)  # batch is a list of (img, target)
     return list(images), list(targets)
-
 
 def run_full_train(
     num_epochs=25,

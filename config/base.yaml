@@ -49,7 +49,7 @@ trainer:
   weight_decay: 1.0e-4
 
   # CV-only
-  n_folds: 5
+  n_folds: 3
   out_dir: experiments/oof_results
 
   # Full-train-only
