@@ -31,6 +31,7 @@ model:
   default_mask_threshold: 0.5
   default_cls_threshold: 0.5
   auth_penalty_cls_threshold: 0.5
+  auth_penalty_temperature: 0.1
 
   # Loss weights
   loss_weights:

@@ -778,6 +778,7 @@ class Mask2FormerForgeryModel(nn.Module):
                 loss_weight_auth_penalty=self.loss_weight_auth_penalty,
                 authenticity_penalty_weight=self.authenticity_penalty_weight,
                 auth_penalty_cls_threshold=self.auth_penalty_cls_threshold,
+                auth_penalty_temperature=self.auth_penalty_temperature,                
             )
 
         # ---- inference (also used when targets is None) ----

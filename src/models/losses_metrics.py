@@ -124,6 +124,10 @@ def hungarian_match(
 
     for b in range(B):
         tgt_masks = targets[b]["masks"]  # [N_gt, H, W] or empty
+        print("[MATCH] b", b,
+              "tgt_shape", tuple(tgt_masks.shape),
+              "tgt_numel", int(tgt_masks.numel()),
+              "tgt_sum", float(tgt_masks.sum().item()))
         if tgt_masks.numel() == 0:
             empty = (
                 torch.empty(0, dtype=torch.long, device=device),
@@ -142,6 +146,8 @@ def hungarian_match(
         cost = match_cost(pred, tgt_masks_resized, cost_bce=cost_bce, cost_dice=cost_dice)  # [N_gt, Q]
 
         tgt_ind, pred_ind = linear_sum_assignment(cost.detach().cpu().numpy())
+        print("[MATCH] cost_shape", tuple(cost.shape),
+                "matched", len(pred_ind), "Q", Q)
         tgt_ind = torch.as_tensor(tgt_ind, dtype=torch.long, device=device)
         pred_ind = torch.as_tensor(pred_ind, dtype=torch.long, device=device)
         indices.append((pred_ind, tgt_ind))
@@ -150,7 +156,6 @@ def hungarian_match(
 
 
 # ------------------- Full loss computation -------------------
-
 
 def compute_losses(
     mask_logits: torch.Tensor,
@@ -167,24 +172,14 @@ def compute_losses(
     loss_weight_auth_penalty: float = 1.0,
     authenticity_penalty_weight: float = 5.0,
     auth_penalty_cls_threshold: float = 0.5,
+    auth_penalty_temperature: float = 0.1,
 ) -> Dict[str, torch.Tensor]:
     """
     Compute all training losses.
 
-    Args:
-        mask_logits: [B, Q, Hm, Wm]
-        class_logits: [B, Q] (forgery vs ignore)
-        img_logits: [B]
-        targets: list[dict] with keys:
-            - 'masks': [N_gt, H, W] binary masks
-            - 'image_label': scalar tensor 0 (authentic) or 1 (forged)
-        cost_bce, cost_dice: weights for matching cost
-        loss_weight_*: loss weights for the combined loss
-        authenticity_penalty_weight: scaling for auth penalty term
-        auth_penalty_cls_threshold: cls prob threshold to consider a query "forged" for penalty
-
-    Returns:
-        dict with individual losses and total loss.
+    Fixes:
+      - removes torch.no_grad() around auth penalty
+      - replaces hard cls threshold with differentiable soft weighting
     """
     B, Q, Hm, Wm = mask_logits.shape
     device = mask_logits.device
@@ -197,9 +192,11 @@ def compute_losses(
         cost_dice=cost_dice,
     )
 
+    # -------------------------
     # Mask losses (Dice + BCE) on matched pairs
-    loss_mask = 0.0
-    loss_dice_val = 0.0
+    # -------------------------
+    loss_mask = mask_logits.new_zeros(())
+    loss_dice_val = mask_logits.new_zeros(())
     num_instances = 0
 
     for b in range(B):
@@ -214,8 +211,8 @@ def compute_losses(
             mode="nearest",
         ).squeeze(1)  # [N_gt, Hm, Wm]
 
-        pred_masks = mask_logits[b, pred_ind]   # [M, Hm, Wm]
-        gt_masks = tgt_masks_resized[tgt_ind]   # [M, Hm, Wm]
+        pred_masks = mask_logits[b, pred_ind]         # [M, Hm, Wm]
+        gt_masks = tgt_masks_resized[tgt_ind]         # [M, Hm, Wm]
 
         loss_mask = loss_mask + sigmoid_ce_loss(pred_masks, gt_masks).sum()
         loss_dice_val = loss_dice_val + dice_loss(pred_masks, gt_masks).sum()
@@ -230,41 +227,50 @@ def compute_losses(
         loss_mask = zero
         loss_dice_val = zero
 
+    # -------------------------
     # Mask-level classification BCE
-    # All matched GT instances are "forgery" (1). Unmatched predictions are 0.
+    # matched queries -> 1, unmatched -> 0
+    # -------------------------
     class_targets = torch.zeros_like(class_logits, device=device)  # [B, Q]
     for b in range(B):
         pred_ind, _ = indices[b]
         if len(pred_ind) > 0:
             class_targets[b, pred_ind] = 1.0
 
-    loss_cls = F.binary_cross_entropy_with_logits(
-        class_logits,
-        class_targets,
-    )
+    loss_cls = F.binary_cross_entropy_with_logits(class_logits, class_targets)
 
+    # -------------------------
     # Image-level authenticity loss
-    img_targets = torch.stack(
-        [t["image_label"].float() for t in targets]
-    ).to(img_logits.device)  # [B]
+    # -------------------------
+    img_targets = torch.stack([t["image_label"].float() for t in targets]).to(img_logits.device)  # [B]
     loss_img = F.binary_cross_entropy_with_logits(img_logits, img_targets)
 
-    # Authenticity penalty: if authentic image (y=0) has non-empty predicted forgery mask
-    with torch.no_grad():
-        mask_probs = torch.sigmoid(mask_logits)        # [B, Q, Hm, Wm]
-        cls_probs = torch.sigmoid(class_logits)        # [B, Q]
-        forgery_mask = cls_probs > auth_penalty_cls_threshold  # [B, Q]
+    # -------------------------
+    # Differentiable authenticity penalty (ONLY on authentic images)
+    #
+    # Penalize "expected forged mask mass" on authentic images:
+    #   soft_cls_weight_q = sigmoid((cls_logit_q - thr) / temp)
+    #   mask_mass_q = mean(sigmoid(mask_logit_q)) over pixels
+    #   penalty_b = mean_q (soft_cls_weight_q * mask_mass_q)
+    # -------------------------
+    mask_probs = torch.sigmoid(mask_logits)     # [B, Q, Hm, Wm]
+    mask_mass = mask_probs.flatten(2).mean(-1)  # [B, Q]
 
-    penalty = mask_logits.new_zeros(())
-    for b in range(B):
-        if img_targets[b] == 0.0:  # authentic image
-            if forgery_mask[b].any():
-                m = mask_probs[b, forgery_mask[b]]     # [K, Hm, Wm]
-                penalty = penalty + m.mean()
+    thr = float(auth_penalty_cls_threshold)
+    temp = max(float(auth_penalty_temperature), 1e-6)
+    soft_cls_weight = torch.sigmoid((class_logits - thr) / temp)  # [B, Q]
 
-    loss_auth_penalty = authenticity_penalty_weight * penalty / max(B, 1)
+    per_image_penalty = (soft_cls_weight * mask_mass).mean(dim=1)  # [B]
 
+    # apply only where img_targets == 0 (authentic)
+    authentic_mask = (img_targets == 0.0).to(per_image_penalty.dtype)  # [B]
+    penalty = (per_image_penalty * authentic_mask).sum() / max(B, 1)
+
+    loss_auth_penalty = authenticity_penalty_weight * penalty
+
+    # -------------------------
     # Weighted total loss
+    # -------------------------
     loss_total = (
         loss_weight_mask_bce * loss_mask +
         loss_weight_mask_dice * loss_dice_val +
@@ -273,7 +279,7 @@ def compute_losses(
         loss_weight_auth_penalty * loss_auth_penalty
     )
 
-    losses = {
+    return {
         "loss_mask_bce": loss_mask,
         "loss_mask_dice": loss_dice_val,
         "loss_mask_cls": loss_cls,
@@ -282,4 +288,3 @@ def compute_losses(
         "loss_total": loss_total,
     }
 
-    return losses

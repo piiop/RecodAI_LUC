@@ -26,6 +26,21 @@ from src.utils.wandb_utils import (
 )
 from src.utils.config_utils import sanitize_model_kwargs
 
+def debug_optimizer_params(model, optimizer, keywords=("img_head", "class_head", "gate")):
+    opt_param_ids = {id(p) for g in optimizer.param_groups for p in g["params"]}
+    named = list(model.named_parameters())
+
+    total_opt = sum(p.numel() for p in model.parameters() if id(p) in opt_param_ids)
+    print(f"[OPT DEBUG] total params in optimizer: {total_opt:,}")
+
+    for kw in keywords:
+        matched = [(n, p.numel()) for n, p in named if kw in n and id(p) in opt_param_ids]
+        count = sum(n for _, n in matched)
+        print(f"[OPT DEBUG] '{kw}' in optimizer: {bool(matched)} ({count:,} params)")
+        if matched:
+            print("   examples:", [n for n, _ in matched[:3]])
+
+
 def build_train_dataset(train_transform=None):
     """
     Full training dataset (same data as CV, with chosen train transform).
@@ -103,8 +118,13 @@ def run_full_train(
         weight_decay=weight_decay,
     )
 
+    debug_optimizer_params(model, optimizer)
+
     # Training loop
     print("Training on FULL DATASET:", len(train_dataset), "samples")
+
+    printed_mask_stats = False
+    printed_logit_stats = False
 
     for epoch in range(num_epochs):
         model.train()
@@ -123,12 +143,113 @@ def run_full_train(
             for t in targets:
                 t["masks"] = t["masks"].to(device)
                 t["image_label"] = t["image_label"].to(device)
+                t = targets[0]
+                m = t["masks"]
+                print("img_label:", int(t["image_label"].item()) if "image_label" in t else None,
+                    "masks_shape:", tuple(m.shape),
+                    "masks_sum:", float(m.sum().item()))
+            # sanity block
+            if not printed_mask_stats:
+                with torch.no_grad():
+                    for i, t in enumerate(targets):
+                        m = t["masks"]
+                        if m.numel() == 0:
+                            print(f"[img {i}] mask: EMPTY")
+                            continue
+
+                        m = m.float()
+                        print(
+                            f"[img {i}] "
+                            f"mean={m.mean(dim=(1,2)).tolist()} "
+                            f"max={m.amax(dim=(1,2)).tolist()} "
+                            f"frac>0.5={(m > 0.5).float().mean(dim=(1,2)).tolist()}"
+                        )
+                printed_mask_stats = True
+            # ---- debug: model output stats for ONE batch (pre-loss) ----
+            if not printed_logit_stats:
+                with torch.no_grad():
+                    mask_logits, class_logits, img_logits = model.forward_logits(images)
+
+                    # logits stats (catch blow-ups)
+                    ml = mask_logits
+                    cl = class_logits
+                    il = img_logits
+
+                    print(
+                        "[debug logits] "
+                        f"mask_logits: min={ml.min().item():.4f} max={ml.max().item():.4f} "
+                        f"mean={ml.mean().item():.4f} std={ml.std().item():.4f} | "
+                        f"class_logits: min={cl.min().item():.4f} max={cl.max().item():.4f} "
+                        f"mean={cl.mean().item():.4f} std={cl.std().item():.4f} | "
+                        f"img_logits: min={il.min().item():.4f} max={il.max().item():.4f} "
+                        f"mean={il.mean().item():.4f} std={il.std().item():.4f}"
+                    )
+
+                    # prob stats (catch double-sigmoid / saturation)
+                    mask_probs = ml.sigmoid()
+                    class_probs = cl.sigmoid()
+                    img_probs = il.sigmoid()
+
+                    # mask saturation diagnostics
+                    print(
+                        "[debug probs] "
+                        f"mask_probs: mean={mask_probs.mean().item():.6f} "
+                        f"p95={mask_probs.flatten().quantile(0.95).item():.6f} "
+                        f"max={mask_probs.max().item():.6f} "
+                        f"frac>0.5={(mask_probs > 0.5).float().mean().item():.6f} | "
+                        f"class_probs: mean={class_probs.mean().item():.6f} "
+                        f"max={class_probs.max().item():.6f} "
+                        f"frac>0.1={(class_probs > 0.1).float().mean().item():.6f} | "
+                        f"img_probs: mean={img_probs.mean().item():.6f} "
+                        f"max={img_probs.max().item():.6f}"
+                    )
+
+                printed_logit_stats = True    
 
             loss_dict = model(images, targets)
             loss = loss_dict["loss_total"]
 
+            w = dict(
+                mask_bce=getattr(model, "loss_weight_mask_bce", None),
+                mask_dice=getattr(model, "loss_weight_mask_dice", None),
+                mask_cls=getattr(model, "loss_weight_mask_cls", None),
+                img_auth=getattr(model, "loss_weight_img_auth", None),
+                auth_pen=getattr(model, "loss_weight_auth_penalty", None),
+                )
+
+            print({
+                "loss_mask_bce": float(loss_dict["loss_mask_bce"].detach().cpu()),
+                "loss_mask_dice": float(loss_dict["loss_mask_dice"].detach().cpu()),
+                "loss_mask_cls": float(loss_dict["loss_mask_cls"].detach().cpu()),
+                "loss_img_auth": float(loss_dict["loss_img_auth"].detach().cpu()),
+                "loss_auth_penalty": float(loss_dict["loss_auth_penalty"].detach().cpu()),
+                "loss_total": float(loss_dict["loss_total"].detach().cpu()),
+                })
+
             optimizer.zero_grad()
             loss.backward()
+
+            def any_param(m):
+                return next((p for p in m.parameters() if p.requires_grad), None)
+
+            def grad_norm(p):
+                return None if (p is None or p.grad is None) else p.grad.norm().item()
+
+            # ---Debug---
+            # with torch.no_grad():
+            #     print(
+            #         f"grad | img_head={grad_norm(any_param(model.img_head))} "
+            #         f"cls_head={grad_norm(any_param(model.class_head))} "
+            #         f"gate={grad_norm(any_param(model.auth_gate)) if hasattr(model, 'auth_gate') else None}"
+            #     )
+            # def has_grad(mod):
+            #     ps = [p for p in mod.parameters() if p.requires_grad]
+            #     return any(p.grad is not None for p in ps)
+
+            # print("grads:",
+            #     "class_head", has_grad(model.class_head),
+            #     "mask_embed_head", has_grad(model.mask_embed_head),
+            #     "img_head", has_grad(model.img_head))    
             optimizer.step()
 
             running_loss += loss.item() * len(images)

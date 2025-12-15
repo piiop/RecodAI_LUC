@@ -5,3 +5,8 @@ python -m src.cli full-train -c base.yaml
 # OOF CV Run
 
 python -m src.cli cv -c base.yaml
+
+python -m src.cli full-train \
+  -c base.yaml \
+  -o trainer.epochs=1 \
+  -o trainer.batch_size=1
