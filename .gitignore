@@ -6,7 +6,7 @@
 /data/test_images
 /data/train_images
 /data/train_masks
-
+*.csv
 # wandb
 /wandb/
 
