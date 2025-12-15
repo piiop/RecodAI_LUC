@@ -42,7 +42,7 @@ model:
 
 trainer:
   # Used by BOTH cv and full-train
-  epochs: 3              # override for full-train via -c or -o
+  epochs: 25              # override for full-train via -c or -o
   batch_size: 4
   lr: 1.0e-4
   weight_decay: 1.0e-4
