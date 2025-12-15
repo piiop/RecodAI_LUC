@@ -1,0 +1,25 @@
+{"tag": "batch_target0", "epoch": 1, "global_step": 0, "img_label": 1, "masks_shape": [2, 256, 256], "masks_sum": 78.0}
+{"tag": "mask_target_sanity", "epoch": 1, "global_step": 0, "per_image": [{"i": 0, "empty": false, "mean_per_inst": [0.0006103515625, 0.000579833984375], "max_per_inst": [1.0, 1.0], "frac_gt_0p5_per_inst": [0.0006103515625, 0.000579833984375]}, {"i": 1, "empty": true}, {"i": 2, "empty": false, "mean_per_inst": [0.00323486328125, 0.0029296875], "max_per_inst": [1.0, 1.0], "frac_gt_0p5_per_inst": [0.00323486328125, 0.0029296875]}, {"i": 3, "empty": false, "mean_per_inst": [0.01904296875, 0.0216522216796875, 0.01702880859375, 0.02001953125], "max_per_inst": [1.0, 1.0, 1.0, 1.0], "frac_gt_0p5_per_inst": [0.01904296875, 0.0216522216796875, 0.01702880859375, 0.02001953125]}]}
+{"tag": "debug_logits", "epoch": 1, "global_step": 0, "mask_logits": {"min": -19.76095962524414, "max": 12.742164611816406, "mean": -0.7304813861846924, "std": 2.728729248046875}, "class_logits": {"min": -0.9410274624824524, "max": -0.3595816493034363, "mean": -0.669633150100708, "std": 0.13835807144641876}, "img_logits": {"min": 0.03717795014381409, "max": 0.09089726209640503, "mean": 0.06900271028280258, "std": 0.023370793089270592}}
+{"tag": "debug_probs", "epoch": 1, "global_step": 0, "mask_probs": {"mean": 0.42017701268196106, "p95": 0.9657362699508667, "max": 0.9999970197677612, "frac_gt_0p5": 0.4031412899494171}, "class_probs": {"mean": 0.3392442762851715, "max": 0.4110608398914337, "frac_gt_0p1": 1.0}, "img_probs": {"mean": 0.5172421932220459, "max": 0.5227086544036865}}
+{"tag": "batch_target0", "epoch": 1, "global_step": 1, "img_label": 0, "masks_shape": [0, 256, 256], "masks_sum": 0.0}
+{"tag": "batch_target0", "epoch": 1, "global_step": 2, "img_label": 0, "masks_shape": [0, 256, 256], "masks_sum": 0.0}
+{"tag": "batch_target0", "epoch": 1, "global_step": 3, "img_label": 1, "masks_shape": [3, 256, 256], "masks_sum": 421.0}
+{"tag": "batch_target0", "epoch": 1, "global_step": 4, "img_label": 1, "masks_shape": [2, 256, 256], "masks_sum": 114.0}
+{"tag": "batch_target0", "epoch": 1, "global_step": 5, "img_label": 1, "masks_shape": [2, 256, 256], "masks_sum": 397.0}
+{"tag": "batch_target0", "epoch": 1, "global_step": 6, "img_label": 1, "masks_shape": [2, 256, 256], "masks_sum": 143.0}
+{"tag": "batch_target0", "epoch": 1, "global_step": 7, "img_label": 1, "masks_shape": [5, 256, 256], "masks_sum": 265.0}
+{"tag": "batch_target0", "epoch": 1, "global_step": 8, "img_label": 1, "masks_shape": [2, 256, 256], "masks_sum": 5259.0}
+{"tag": "batch_target0", "epoch": 1, "global_step": 9, "img_label": 1, "masks_shape": [4, 256, 256], "masks_sum": 1971.0}
+{"tag": "batch_target0", "epoch": 1, "global_step": 10, "img_label": 0, "masks_shape": [0, 256, 256], "masks_sum": 0.0}
+{"tag": "batch_target0", "epoch": 1, "global_step": 11, "img_label": 0, "masks_shape": [0, 256, 256], "masks_sum": 0.0}
+{"tag": "batch_target0", "epoch": 1, "global_step": 12, "img_label": 1, "masks_shape": [2, 256, 256], "masks_sum": 1800.0}
+{"tag": "batch_target0", "epoch": 1, "global_step": 13, "img_label": 0, "masks_shape": [0, 256, 256], "masks_sum": 0.0}
+{"tag": "batch_target0", "epoch": 1, "global_step": 14, "img_label": 1, "masks_shape": [3, 256, 256], "masks_sum": 430.0}
+{"tag": "batch_target0", "epoch": 1, "global_step": 15, "img_label": 1, "masks_shape": [2, 256, 256], "masks_sum": 17976.0}
+{"tag": "batch_target0", "epoch": 1, "global_step": 16, "img_label": 0, "masks_shape": [0, 256, 256], "masks_sum": 0.0}
+{"tag": "batch_target0", "epoch": 1, "global_step": 17, "img_label": 0, "masks_shape": [0, 256, 256], "masks_sum": 0.0}
+{"tag": "batch_target0", "epoch": 1, "global_step": 18, "img_label": 1, "masks_shape": [2, 256, 256], "masks_sum": 1983.0}
+{"tag": "batch_target0", "epoch": 1, "global_step": 19, "img_label": 0, "masks_shape": [0, 256, 256], "masks_sum": 0.0}
+{"tag": "batch_target0", "epoch": 1, "global_step": 20, "img_label": 1, "masks_shape": [2, 256, 256], "masks_sum": 658.0}
+{"tag": "batch_target0", "epoch": 1, "global_step": 21, "img_label": 0, "masks_shape": [0, 256, 256], "masks_sum": 0.0}

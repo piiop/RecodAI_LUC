@@ -241,7 +241,14 @@ def run_full_train(
 
                 printed_logit_stats = True
 
-            loss_dict = model(images, targets)
+            loss_dict = model(
+                images,
+                targets,
+                inference_overrides={
+                    "logger": collapse_logger,
+                    "debug_ctx": {"epoch": epoch + 1, "global_step": global_step},
+                },
+            )
             loss = loss_dict["loss_total"]
 
             optimizer.zero_grad()

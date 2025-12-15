@@ -766,6 +766,7 @@ class Mask2FormerForgeryModel(nn.Module):
 
         # ---- training loss ----
         if self.training and targets is not None:
+            overrides = inference_overrides or {}
             return compute_losses(
                 mask_logits,
                 class_logits,
@@ -780,7 +781,9 @@ class Mask2FormerForgeryModel(nn.Module):
                 loss_weight_auth_penalty=self.loss_weight_auth_penalty,
                 authenticity_penalty_weight=self.authenticity_penalty_weight,
                 auth_penalty_cls_threshold=self.auth_penalty_cls_threshold,
-                auth_penalty_temperature=self.auth_penalty_temperature,                
+                auth_penalty_temperature=self.auth_penalty_temperature,
+                logger=overrides.get("logger", None),
+                debug_ctx=overrides.get("debug_ctx", None),
             )
 
         # ---- inference (also used when targets is None) ----

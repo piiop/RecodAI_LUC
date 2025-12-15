@@ -105,6 +105,9 @@ def hungarian_match(
     targets: List[Dict],
     cost_bce: float = 1.0,
     cost_dice: float = 1.0,
+    *,
+    logger=None,
+    debug_ctx: Dict | None = None,
 ) -> List[Tuple[torch.Tensor, torch.Tensor]]:
     """
     Run Hungarian matching per image.
@@ -114,6 +117,8 @@ def hungarian_match(
         targets: list of dicts with key 'masks': [N_gt, H, W]
         cost_bce: BCE weight for matching
         cost_dice: Dice weight for matching
+        logger: optional ClsCollapseLogger-like object with .debug_event(tag, payload)
+        debug_ctx: optional dict (e.g., {"epoch": 1, "global_step": 123}) to attach to logs
 
     Returns:
         indices: list of length B, each (pred_ind, tgt_ind) as LongTensors
@@ -121,19 +126,38 @@ def hungarian_match(
     B, Q, Hm, Wm = mask_logits.shape
     device = mask_logits.device
     indices: List[Tuple[torch.Tensor, torch.Tensor]] = []
+    ctx = {} if debug_ctx is None else dict(debug_ctx)
 
     for b in range(B):
         tgt_masks = targets[b]["masks"]  # [N_gt, H, W] or empty
-        print("[MATCH] b", b,
-              "tgt_shape", tuple(tgt_masks.shape),
-              "tgt_numel", int(tgt_masks.numel()),
-              "tgt_sum", float(tgt_masks.sum().item()))
+
+        if logger is not None:
+            logger.debug_event(
+                "hungarian_match_input",
+                {
+                    **ctx,
+                    "b": b,
+                    "Q": int(Q),
+                    "Hm": int(Hm),
+                    "Wm": int(Wm),
+                    "tgt_shape": list(tgt_masks.shape),
+                    "tgt_numel": int(tgt_masks.numel()),
+                    "tgt_sum": float(tgt_masks.sum().item()) if tgt_masks.numel() else 0.0,
+                },
+            )
+
         if tgt_masks.numel() == 0:
             empty = (
                 torch.empty(0, dtype=torch.long, device=device),
                 torch.empty(0, dtype=torch.long, device=device),
             )
             indices.append(empty)
+
+            if logger is not None:
+                logger.debug_event(
+                    "hungarian_match_result",
+                    {**ctx, "b": b, "matched": 0, "reason": "empty_gt"},
+                )
             continue
 
         tgt_masks_resized = F.interpolate(
@@ -143,17 +167,30 @@ def hungarian_match(
         ).squeeze(1)  # [N_gt, Hm, Wm]
 
         pred = mask_logits[b]  # [Q, Hm, Wm]
-        cost = match_cost(pred, tgt_masks_resized, cost_bce=cost_bce, cost_dice=cost_dice)  # [N_gt, Q]
+        cost = match_cost(
+            pred, tgt_masks_resized, cost_bce=cost_bce, cost_dice=cost_dice
+        )  # [N_gt, Q]
 
-        tgt_ind, pred_ind = linear_sum_assignment(cost.detach().cpu().numpy())
-        print("[MATCH] cost_shape", tuple(cost.shape),
-                "matched", len(pred_ind), "Q", Q)
-        tgt_ind = torch.as_tensor(tgt_ind, dtype=torch.long, device=device)
-        pred_ind = torch.as_tensor(pred_ind, dtype=torch.long, device=device)
+        tgt_ind_np, pred_ind_np = linear_sum_assignment(cost.detach().cpu().numpy())
+        tgt_ind = torch.as_tensor(tgt_ind_np, dtype=torch.long, device=device)
+        pred_ind = torch.as_tensor(pred_ind_np, dtype=torch.long, device=device)
         indices.append((pred_ind, tgt_ind))
 
-    return indices
+        if logger is not None:
+            # keep it lightweight: just shapes + matched count (no cost matrix dumps)
+            logger.debug_event(
+                "hungarian_match_result",
+                {
+                    **ctx,
+                    "b": b,
+                    "cost_shape": [int(cost.shape[0]), int(cost.shape[1])],
+                    "matched": int(pred_ind.numel()),
+                    "num_gt": int(tgt_masks.shape[0]),
+                    "Q": int(Q),
+                },
+            )
 
+    return indices
 
 # ------------------- Full loss computation -------------------
 
@@ -173,16 +210,22 @@ def compute_losses(
     authenticity_penalty_weight: float = 5.0,
     auth_penalty_cls_threshold: float = 0.5,
     auth_penalty_temperature: float = 0.1,
+    logger=None,
+    debug_ctx: Dict | None = None,
 ) -> Dict[str, torch.Tensor]:
     """
     Compute all training losses.
 
-    Fixes:
-      - removes torch.no_grad() around auth penalty
-      - replaces hard cls threshold with differentiable soft weighting
+    - No print spam; optional structured logs via `logger.debug_event(tag, payload)`.
+    - Keeps backward graph for auth penalty (no torch.no_grad).
+    - Uses differentiable gating for cls in auth penalty.
+
+    logger: optional ClsCollapseLogger-like object with .debug_event(...)
+    debug_ctx: optional dict (e.g., {"epoch": 1, "global_step": 123})
     """
     B, Q, Hm, Wm = mask_logits.shape
     device = mask_logits.device
+    ctx = {} if debug_ctx is None else dict(debug_ctx)
 
     # Hungarian matching
     indices = hungarian_match(
@@ -190,18 +233,20 @@ def compute_losses(
         targets,
         cost_bce=cost_bce,
         cost_dice=cost_dice,
+        logger=logger,
+        debug_ctx=debug_ctx,
     )
 
     # -------------------------
     # Mask losses (Dice + BCE) on matched pairs
     # -------------------------
-    loss_mask = mask_logits.new_zeros(())
-    loss_dice_val = mask_logits.new_zeros(())
+    loss_mask_bce = mask_logits.new_zeros(())
+    loss_mask_dice = mask_logits.new_zeros(())
     num_instances = 0
 
     for b in range(B):
         pred_ind, tgt_ind = indices[b]
-        if len(pred_ind) == 0:
+        if pred_ind.numel() == 0:
             continue
 
         tgt_masks = targets[b]["masks"]  # [N_gt, H, W]
@@ -211,83 +256,101 @@ def compute_losses(
             mode="nearest",
         ).squeeze(1)  # [N_gt, Hm, Wm]
 
-        pred_masks = mask_logits[b, pred_ind]         # [M, Hm, Wm]
-        gt_masks = tgt_masks_resized[tgt_ind]         # [M, Hm, Wm]
+        pred_masks = mask_logits[b, pred_ind]   # [M, Hm, Wm]
+        gt_masks = tgt_masks_resized[tgt_ind]   # [M, Hm, Wm]
 
-        loss_mask = loss_mask + sigmoid_ce_loss(pred_masks, gt_masks).sum()
-        loss_dice_val = loss_dice_val + dice_loss(pred_masks, gt_masks).sum()
-        num_instances += pred_ind.numel()
+        loss_mask_bce = loss_mask_bce + sigmoid_ce_loss(pred_masks, gt_masks).sum()
+        loss_mask_dice = loss_mask_dice + dice_loss(pred_masks, gt_masks).sum()
+        num_instances += int(pred_ind.numel())
 
     if num_instances > 0:
-        loss_mask = loss_mask / num_instances
-        loss_dice_val = loss_dice_val / num_instances
+        loss_mask_bce = loss_mask_bce / num_instances
+        loss_mask_dice = loss_mask_dice / num_instances
     else:
-        # keep graph / device
-        zero = mask_logits.sum() * 0.0
-        loss_mask = zero
-        loss_dice_val = zero
+        # keep graph/device consistent
+        z = mask_logits.sum() * 0.0
+        loss_mask_bce = z
+        loss_mask_dice = z
 
     # -------------------------
-    # Mask-level classification BCE
+    # Mask-level classification BCE:
     # matched queries -> 1, unmatched -> 0
     # -------------------------
     class_targets = torch.zeros_like(class_logits, device=device)  # [B, Q]
-
     for b in range(B):
         pred_ind, _ = indices[b]
-        if len(pred_ind) > 0:
+        if pred_ind.numel() > 0:
             class_targets[b, pred_ind] = 1.0
-    pos = int(class_targets.sum().item())
-    tot = class_targets.numel()            
-    print("cls_pos/total:", pos, "/", tot)
-    loss_cls = F.binary_cross_entropy_with_logits(class_logits, class_targets)
+
+    if logger is not None:
+        pos = int(class_targets.sum().item())
+        tot = int(class_targets.numel())
+        logger.debug_event(
+            "loss_cls_targets",
+            {
+                **ctx,
+                "B": int(B),
+                "Q": int(Q),
+                "pos": pos,
+                "total": tot,
+                "pos_frac": (pos / max(tot, 1)),
+            },
+        )
+
+    loss_mask_cls = F.binary_cross_entropy_with_logits(class_logits, class_targets)
 
     # -------------------------
     # Image-level authenticity loss
     # -------------------------
     img_targets = torch.stack([t["image_label"].float() for t in targets]).to(img_logits.device)  # [B]
-    loss_img = F.binary_cross_entropy_with_logits(img_logits, img_targets)
+    loss_img_auth = F.binary_cross_entropy_with_logits(img_logits, img_targets)
 
     # -------------------------
     # Differentiable authenticity penalty (ONLY on authentic images)
-    #
-    # Penalize "expected forged mask mass" on authentic images:
-    #   soft_cls_weight_q = sigmoid((cls_logit_q - thr) / temp)
-    #   mask_mass_q = mean(sigmoid(mask_logit_q)) over pixels
-    #   penalty_b = mean_q (soft_cls_weight_q * mask_mass_q)
     # -------------------------
-    mask_probs = torch.sigmoid(mask_logits)     # [B, Q, Hm, Wm]
-    mask_mass = mask_probs.flatten(2).mean(-1)  # [B, Q]
+    mask_probs = torch.sigmoid(mask_logits)        # [B, Q, Hm, Wm]
+    mask_mass = mask_probs.flatten(2).mean(-1)     # [B, Q]
 
     thr = float(auth_penalty_cls_threshold)
     temp = max(float(auth_penalty_temperature), 1e-6)
     soft_cls_weight = torch.sigmoid((class_logits - thr) / temp)  # [B, Q]
 
     per_image_penalty = (soft_cls_weight * mask_mass).mean(dim=1)  # [B]
-
-    # apply only where img_targets == 0 (authentic)
     authentic_mask = (img_targets == 0.0).to(per_image_penalty.dtype)  # [B]
     penalty = (per_image_penalty * authentic_mask).sum() / max(B, 1)
-
     loss_auth_penalty = authenticity_penalty_weight * penalty
+
+    if logger is not None:
+        logger.debug_event(
+            "loss_auth_penalty_stats",
+            {
+                **ctx,
+                "thr": thr,
+                "temp": temp,
+                "authentic_frac": float(authentic_mask.mean().item()) if B > 0 else 0.0,
+                "per_image_penalty_mean": float(per_image_penalty.mean().item()) if B > 0 else 0.0,
+                "loss_auth_penalty": float(loss_auth_penalty.detach().cpu()),
+            },
+        )
 
     # -------------------------
     # Weighted total loss
     # -------------------------
     loss_total = (
-        loss_weight_mask_bce * loss_mask +
-        loss_weight_mask_dice * loss_dice_val +
-        loss_weight_mask_cls * loss_cls +
-        loss_weight_img_auth * loss_img +
-        loss_weight_auth_penalty * loss_auth_penalty
+        loss_weight_mask_bce * loss_mask_bce
+        + loss_weight_mask_dice * loss_mask_dice
+        + loss_weight_mask_cls * loss_mask_cls
+        + loss_weight_img_auth * loss_img_auth
+        + loss_weight_auth_penalty * loss_auth_penalty
     )
 
     return {
-        "loss_mask_bce": loss_mask,
-        "loss_mask_dice": loss_dice_val,
-        "loss_mask_cls": loss_cls,
-        "loss_img_auth": loss_img,
+        "loss_mask_bce": loss_mask_bce,
+        "loss_mask_dice": loss_mask_dice,
+        "loss_mask_cls": loss_mask_cls,
+        "loss_img_auth": loss_img_auth,
         "loss_auth_penalty": loss_auth_penalty,
         "loss_total": loss_total,
     }
+
 

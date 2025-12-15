@@ -11,6 +11,7 @@ def _jsonify(v: Any) -> Any:
     """Convert torch / numpy scalars + misc to JSON-friendly."""
     try:
         import torch
+
         if isinstance(v, torch.Tensor):
             if v.numel() == 1:
                 return v.detach().cpu().item()
@@ -20,12 +21,13 @@ def _jsonify(v: Any) -> Any:
 
     try:
         import numpy as np
+
         if isinstance(v, (np.generic,)):
             return v.item()
     except Exception:
         pass
 
-    if isinstance(v, (Path,)):
+    if isinstance(v, Path):
         return str(v)
 
     return v
@@ -38,11 +40,15 @@ class ClsCollapseLogger:
       - optimizer debug (json)
       - per-step losses (csv)
       - per-epoch summaries (csv)
-      - one-time debug dumps (jsonl): target mask stats, logits/probs stats
+      - debug events (jsonl): matching + cls/auth penalty diagnostics
     """
-    def __init__(self, out_dir: str, run_name: str):
+
+    def __init__(self, out_dir: str, run_name: str, *, enable_debug: bool = True):
         self.out_dir = Path(out_dir) / run_name
         self.out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Toggle for high-volume JSONL debug events (matching, penalty stats, etc.)
+        self.enable_debug = bool(enable_debug)
 
         self.paths = {
             "meta": self.out_dir / "meta.json",
@@ -67,10 +73,29 @@ class ClsCollapseLogger:
         self.paths["optimizer"].write_text(json.dumps(info, indent=2))
 
     def debug_event(self, tag: str, payload: Dict[str, Any]) -> None:
+        """Append a single JSONL record with a 'tag' and arbitrary payload."""
+        if not self.enable_debug:
+            return
+
         rec = {"tag": tag, **payload}
         rec = {k: _jsonify(v) for k, v in rec.items()}
         with self.paths["debug_jsonl"].open("a", encoding="utf-8") as f:
             f.write(json.dumps(rec) + "\n")
+
+    # ---------------------
+    # Convenience wrappers (optional; compute_losses can call debug_event directly)
+    # ---------------------
+    def log_hungarian_match_input(self, payload: Dict[str, Any]) -> None:
+        self.debug_event("hungarian_match_input", payload)
+
+    def log_hungarian_match_result(self, payload: Dict[str, Any]) -> None:
+        self.debug_event("hungarian_match_result", payload)
+
+    def log_loss_cls_targets(self, payload: Dict[str, Any]) -> None:
+        self.debug_event("loss_cls_targets", payload)
+
+    def log_loss_auth_penalty_stats(self, payload: Dict[str, Any]) -> None:
+        self.debug_event("loss_auth_penalty_stats", payload)
 
     # ---------------------
     # CSV writers
