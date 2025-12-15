@@ -621,6 +621,7 @@ class Mask2FormerForgeryModel(nn.Module):
         default_mask_threshold=0.5,
         default_cls_threshold=0.5,
         auth_penalty_cls_threshold=None,
+        auth_penalty_temperature=0.1,
         # matching weights
         cost_bce=1.0,
         cost_dice=1.0,
@@ -655,6 +656,7 @@ class Mask2FormerForgeryModel(nn.Module):
             if auth_penalty_cls_threshold is not None
             else default_cls_threshold,
         )
+        self.auth_penalty_temperature = auth_penalty_temperature
 
         # -----------------------------
         # Matching weights

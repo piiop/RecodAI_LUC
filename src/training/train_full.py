@@ -25,20 +25,24 @@ from src.utils.wandb_utils import (
     finish_run,
 )
 from src.utils.config_utils import sanitize_model_kwargs
+from src.utils.cls_collapse_logger import ClsCollapseLogger
 
-def debug_optimizer_params(model, optimizer, keywords=("img_head", "class_head", "gate")):
+def collect_optimizer_debug(model, optimizer, keywords=("img_head", "class_head", "gate")):
     opt_param_ids = {id(p) for g in optimizer.param_groups for p in g["params"]}
     named = list(model.named_parameters())
 
     total_opt = sum(p.numel() for p in model.parameters() if id(p) in opt_param_ids)
-    print(f"[OPT DEBUG] total params in optimizer: {total_opt:,}")
 
+    out = {"total_params_in_optimizer": int(total_opt), "keywords": {}}
     for kw in keywords:
         matched = [(n, p.numel()) for n, p in named if kw in n and id(p) in opt_param_ids]
-        count = sum(n for _, n in matched)
-        print(f"[OPT DEBUG] '{kw}' in optimizer: {bool(matched)} ({count:,} params)")
-        if matched:
-            print("   examples:", [n for n, _ in matched[:3]])
+        out["keywords"][kw] = {
+            "present": bool(matched),
+            "params": int(sum(num for _, num in matched)),
+            "examples": [n for n, _ in matched[:3]],
+        }
+    return out
+
 
 
 def build_train_dataset(train_transform=None):
@@ -59,7 +63,7 @@ def collate_batch(batch):
 
 
 def run_full_train(
-    num_epochs=30,
+    num_epochs=25,
     batch_size=4,
     lr=1e-4,
     weight_decay=1e-4,
@@ -112,25 +116,39 @@ def run_full_train(
         **mk,
     ).to(device)
 
+    run_name = f"full_{save_path.stem}"
+    collapse_logger = ClsCollapseLogger(out_dir="experiments/cls_collapse", run_name=run_name)
+    collapse_logger.write_meta({
+        "device": str(device),
+        "num_epochs": num_epochs,
+        "batch_size": batch_size,
+        "lr": lr,
+        "weight_decay": weight_decay,
+        "save_path": str(save_path),
+        "model_kwargs": mk,
+        "dataset_len": len(train_dataset),
+    })
+
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=lr,
         weight_decay=weight_decay,
     )
-
-    debug_optimizer_params(model, optimizer)
+    collapse_logger.write_optimizer_debug(collect_optimizer_debug(model, optimizer))
 
     # Training loop
     print("Training on FULL DATASET:", len(train_dataset), "samples")
 
     printed_mask_stats = False
     printed_logit_stats = False
+    global_step = 0
+    epoch_loss = None
 
     for epoch in range(num_epochs):
         model.train()
         running_loss = 0.0
 
-        # ---- debug: pick 1 fixed batch per epoch (train) ----
+        # fixed debug batch per epoch
         debug_images, debug_targets = next(iter(train_loader))
         debug_images = [img.to(device) for img in debug_images]
         for t in debug_targets:
@@ -139,145 +157,136 @@ def run_full_train(
 
         for images, targets in train_loader:
             images = [img.to(device) for img in images]
-
             for t in targets:
                 t["masks"] = t["masks"].to(device)
                 t["image_label"] = t["image_label"].to(device)
-                t = targets[0]
-                m = t["masks"]
-                print("img_label:", int(t["image_label"].item()) if "image_label" in t else None,
-                    "masks_shape:", tuple(m.shape),
-                    "masks_sum:", float(m.sum().item()))
-            # sanity block
+
+            # ---- (was print of target[0] stats) ----
+            t0 = targets[0]
+            m0 = t0["masks"]
+            collapse_logger.debug_event("batch_target0", {
+                "epoch": epoch + 1,
+                "global_step": global_step,
+                "img_label": int(t0["image_label"].item()) if "image_label" in t0 else None,
+                "masks_shape": list(m0.shape),
+                "masks_sum": float(m0.sum().item()),
+            })
+
+            # ---- (was one-time sanity block) ----
             if not printed_mask_stats:
+                payload = {"epoch": epoch + 1, "global_step": global_step, "per_image": []}
                 with torch.no_grad():
                     for i, t in enumerate(targets):
                         m = t["masks"]
                         if m.numel() == 0:
-                            print(f"[img {i}] mask: EMPTY")
+                            payload["per_image"].append({"i": i, "empty": True})
                             continue
-
-                        m = m.float()
-                        print(
-                            f"[img {i}] "
-                            f"mean={m.mean(dim=(1,2)).tolist()} "
-                            f"max={m.amax(dim=(1,2)).tolist()} "
-                            f"frac>0.5={(m > 0.5).float().mean(dim=(1,2)).tolist()}"
-                        )
+                        mf = m.float()
+                        payload["per_image"].append({
+                            "i": i,
+                            "empty": False,
+                            "mean_per_inst": mf.mean(dim=(1,2)).tolist(),
+                            "max_per_inst": mf.amax(dim=(1,2)).tolist(),
+                            "frac_gt_0p5_per_inst": (mf > 0.5).float().mean(dim=(1,2)).tolist(),
+                        })
+                collapse_logger.debug_event("mask_target_sanity", payload)
                 printed_mask_stats = True
-            # ---- debug: model output stats for ONE batch (pre-loss) ----
+
+            # ---- (was one-time logits/probs stats pre-loss) ----
             if not printed_logit_stats:
                 with torch.no_grad():
                     mask_logits, class_logits, img_logits = model.forward_logits(images)
+                    ml, cl, il = mask_logits, class_logits, img_logits
 
-                    # logits stats (catch blow-ups)
-                    ml = mask_logits
-                    cl = class_logits
-                    il = img_logits
-
-                    print(
-                        "[debug logits] "
-                        f"mask_logits: min={ml.min().item():.4f} max={ml.max().item():.4f} "
-                        f"mean={ml.mean().item():.4f} std={ml.std().item():.4f} | "
-                        f"class_logits: min={cl.min().item():.4f} max={cl.max().item():.4f} "
-                        f"mean={cl.mean().item():.4f} std={cl.std().item():.4f} | "
-                        f"img_logits: min={il.min().item():.4f} max={il.max().item():.4f} "
-                        f"mean={il.mean().item():.4f} std={il.std().item():.4f}"
-                    )
-
-                    # prob stats (catch double-sigmoid / saturation)
                     mask_probs = ml.sigmoid()
                     class_probs = cl.sigmoid()
                     img_probs = il.sigmoid()
 
-                    # mask saturation diagnostics
-                    print(
-                        "[debug probs] "
-                        f"mask_probs: mean={mask_probs.mean().item():.6f} "
-                        f"p95={mask_probs.flatten().quantile(0.95).item():.6f} "
-                        f"max={mask_probs.max().item():.6f} "
-                        f"frac>0.5={(mask_probs > 0.5).float().mean().item():.6f} | "
-                        f"class_probs: mean={class_probs.mean().item():.6f} "
-                        f"max={class_probs.max().item():.6f} "
-                        f"frac>0.1={(class_probs > 0.1).float().mean().item():.6f} | "
-                        f"img_probs: mean={img_probs.mean().item():.6f} "
-                        f"max={img_probs.max().item():.6f}"
-                    )
+                    collapse_logger.debug_event("debug_logits", {
+                        "epoch": epoch + 1,
+                        "global_step": global_step,
+                        "mask_logits": {
+                            "min": ml.min().item(), "max": ml.max().item(),
+                            "mean": ml.mean().item(), "std": ml.std().item(),
+                        },
+                        "class_logits": {
+                            "min": cl.min().item(), "max": cl.max().item(),
+                            "mean": cl.mean().item(), "std": cl.std().item(),
+                        },
+                        "img_logits": {
+                            "min": il.min().item(), "max": il.max().item(),
+                            "mean": il.mean().item(), "std": il.std().item(),
+                        },
+                    })
 
-                printed_logit_stats = True    
+                    collapse_logger.debug_event("debug_probs", {
+                        "epoch": epoch + 1,
+                        "global_step": global_step,
+                        "mask_probs": {
+                            "mean": mask_probs.mean().item(),
+                            "p95": mask_probs.flatten().quantile(0.95).item(),
+                            "max": mask_probs.max().item(),
+                            "frac_gt_0p5": (mask_probs > 0.5).float().mean().item(),
+                        },
+                        "class_probs": {
+                            "mean": class_probs.mean().item(),
+                            "max": class_probs.max().item(),
+                            "frac_gt_0p1": (class_probs > 0.1).float().mean().item(),
+                        },
+                        "img_probs": {
+                            "mean": img_probs.mean().item(),
+                            "max": img_probs.max().item(),
+                        },
+                    })
+
+                printed_logit_stats = True
 
             loss_dict = model(images, targets)
             loss = loss_dict["loss_total"]
 
-            w = dict(
-                mask_bce=getattr(model, "loss_weight_mask_bce", None),
-                mask_dice=getattr(model, "loss_weight_mask_dice", None),
-                mask_cls=getattr(model, "loss_weight_mask_cls", None),
-                img_auth=getattr(model, "loss_weight_img_auth", None),
-                auth_pen=getattr(model, "loss_weight_auth_penalty", None),
-                )
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
-            print({
+            # ---- (was print of loss dict) ----
+            collapse_logger.log_step_losses({
+                "epoch": epoch + 1,
+                "global_step": global_step,
+                "lr": optimizer.param_groups[0]["lr"],
                 "loss_mask_bce": float(loss_dict["loss_mask_bce"].detach().cpu()),
                 "loss_mask_dice": float(loss_dict["loss_mask_dice"].detach().cpu()),
                 "loss_mask_cls": float(loss_dict["loss_mask_cls"].detach().cpu()),
                 "loss_img_auth": float(loss_dict["loss_img_auth"].detach().cpu()),
                 "loss_auth_penalty": float(loss_dict["loss_auth_penalty"].detach().cpu()),
                 "loss_total": float(loss_dict["loss_total"].detach().cpu()),
-                })
-
-            optimizer.zero_grad()
-            loss.backward()
-
-            def any_param(m):
-                return next((p for p in m.parameters() if p.requires_grad), None)
-
-            def grad_norm(p):
-                return None if (p is None or p.grad is None) else p.grad.norm().item()
-
-            # ---Debug---
-            # with torch.no_grad():
-            #     print(
-            #         f"grad | img_head={grad_norm(any_param(model.img_head))} "
-            #         f"cls_head={grad_norm(any_param(model.class_head))} "
-            #         f"gate={grad_norm(any_param(model.auth_gate)) if hasattr(model, 'auth_gate') else None}"
-            #     )
-            # def has_grad(mod):
-            #     ps = [p for p in mod.parameters() if p.requires_grad]
-            #     return any(p.grad is not None for p in ps)
-
-            # print("grads:",
-            #     "class_head", has_grad(model.class_head),
-            #     "mask_embed_head", has_grad(model.mask_embed_head),
-            #     "img_head", has_grad(model.img_head))    
-            optimizer.step()
+                # weights snapshot (helps sweep analysis)
+                "w_mask_bce": float(getattr(model, "loss_weight_mask_bce", 0.0)),
+                "w_mask_dice": float(getattr(model, "loss_weight_mask_dice", 0.0)),
+                "w_mask_cls": float(getattr(model, "loss_weight_mask_cls", 0.0)),
+                "w_img_auth": float(getattr(model, "loss_weight_img_auth", 0.0)),
+                "w_auth_penalty": float(getattr(model, "loss_weight_auth_penalty", 0.0)),
+            })
 
             running_loss += loss.item() * len(images)
+            global_step += 1
 
         epoch_loss = running_loss / len(train_dataset)
-        print(f"Epoch {epoch + 1}/{num_epochs} - Loss: {epoch_loss:.4f}")
 
-        # --- wandb: per-epoch full-train loss ---
-        log_epoch_metrics(
-            stage="train",
-            metrics={"loss": epoch_loss},
-            epoch=epoch + 1,
-            global_step=epoch + 1,
-        )
-
-        # ---- debug: logit/prob sanity (collapse detectors) ----
+        # ---- epoch-end collapse detectors (already existed) ----
         model.eval()
         with torch.no_grad():
             mask_logits, class_logits, img_logits = model.forward_logits(debug_images)
 
-            cls_probs = class_logits.sigmoid()                 # [B,Q]
-            img_probs = img_logits.sigmoid()                   # [B]
-            mask_probs = mask_logits.sigmoid().flatten(2)      # [B,Q,HW]
+            cls_probs = class_logits.sigmoid()
+            img_probs = img_logits.sigmoid()
+            mask_probs = mask_logits.sigmoid().flatten(2)
 
-            cls_max = cls_probs.max(dim=1).values              # [B]
-            mask_max = mask_probs.max(dim=2).values.max(dim=1).values  # [B] (max over Q and HW)
+            cls_max = cls_probs.max(dim=1).values
+            mask_max = mask_probs.max(dim=2).values.max(dim=1).values
 
-            dbg = {
+            collapse_logger.log_epoch_summary({
+                "epoch": epoch + 1,
+                "epoch_loss": float(epoch_loss),
                 "cls_max_mean": cls_max.mean().item(),
                 "cls_max_p95": cls_max.quantile(0.95).item(),
                 "keep_rate@0.1": (cls_probs > 0.1).float().mean().item(),
@@ -285,22 +294,14 @@ def run_full_train(
                 "keep_rate@0.3": (cls_probs > 0.3).float().mean().item(),
                 "img_forged_mean": img_probs.mean().item(),
                 "mask_max_mean": mask_max.mean().item(),
-            }
+                "w_mask_cls": float(getattr(model, "loss_weight_mask_cls", 0.0)),
+            })
 
-        log_epoch_metrics(
-            stage="debug",
-            metrics=dbg,
-            epoch=epoch + 1,
-            global_step=epoch + 1,
-        )
         model.train()
 
-    # Save weights
     torch.save(model.state_dict(), str(save_path))
-    print(f"Model weights saved to: {save_path}")
 
-    # --- wandb: final loss + model artifact ---
-    set_summary("final_train_loss", float(epoch_loss))
+    set_summary("final_train_loss", float(epoch_loss if epoch_loss is not None else 0.0))
     log_artifact(
         path=str(save_path),
         name=save_path.stem,

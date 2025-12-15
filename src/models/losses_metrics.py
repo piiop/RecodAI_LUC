@@ -232,11 +232,14 @@ def compute_losses(
     # matched queries -> 1, unmatched -> 0
     # -------------------------
     class_targets = torch.zeros_like(class_logits, device=device)  # [B, Q]
+
     for b in range(B):
         pred_ind, _ = indices[b]
         if len(pred_ind) > 0:
             class_targets[b, pred_ind] = 1.0
-
+    pos = int(class_targets.sum().item())
+    tot = class_targets.numel()            
+    print("cls_pos/total:", pos, "/", tot)
     loss_cls = F.binary_cross_entropy_with_logits(class_logits, class_targets)
 
     # -------------------------
