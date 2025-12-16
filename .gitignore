@@ -9,6 +9,8 @@
 *.csv
 # wandb
 /wandb/
+# csvs
+/experiments
 
 # Training / experiment artifacts
 /experiments/oof_results/

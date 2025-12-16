@@ -13,7 +13,8 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
-from src.data.dataloader import ForgeryDataset, get_train_transform
+from src.data.dataloader import ForgeryDataset, get_train_transform, make_groupkfold_splits
+
 from src.models.mask2former_v1 import Mask2FormerForgeryModel
 from src.utils.seed_logging_utils import setup_seed, log_seed_info
 from src.utils.wandb_utils import (

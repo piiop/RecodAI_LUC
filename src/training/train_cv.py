@@ -22,12 +22,12 @@ from PIL import Image
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from sklearn.model_selection import StratifiedKFold
 
 from src.data.dataloader import (
     ForgeryDataset,
     get_train_transform,
     get_val_transform,
+    make_groupkfold_splits
 )
 from src.inference.postprocess import rle_encode
 from src.models.mask2former_v1 import Mask2FormerForgeryModel
@@ -170,17 +170,20 @@ def run_cv(
     n_samples = len(full_dataset)
     print(f"Built solution_df with {len(solution_df)} rows")
 
-    skf = StratifiedKFold(n_splits=num_folds, shuffle=True, random_state=42)
+    # GroupKFold splits to prevent leakage across authentic/forged variants
+    splits = make_groupkfold_splits(full_dataset, n_splits=num_folds)
 
     oof_pred = [None] * n_samples
     fold_scores = []
 
     mk = sanitize_model_kwargs(model_kwargs or {})
 
-    for fold, (train_idx, val_idx) in enumerate(skf.split(np.zeros(n_samples), is_forged)):
+    for fold, (train_idx, val_idx) in enumerate(splits):
         print(f"\n===== Fold {fold + 1}/{num_folds} =====")
-        train_idx = train_idx.tolist()
-        val_idx = val_idx.tolist()
+        if hasattr(train_idx, "tolist"):
+            train_idx = train_idx.tolist()
+        if hasattr(val_idx, "tolist"):
+            val_idx = val_idx.tolist()
 
         train_loader = DataLoader(
             torch.utils.data.Subset(ds_train, train_idx),
@@ -404,11 +407,39 @@ def run_cv(
         # ---- Inference on validation fold (OOF) ----
         model.eval()
         with torch.no_grad():
+
+            # unified inference-debug stats (aggregated over the whole val fold)
+            inf_dbg = {
+                "n": 0,
+                "masks_empty": 0,
+                "gate_fail": 0,
+                "num_keep0": 0,
+                "cls_filtered_all_fg": 0,  # any_fg_pre_keep=True but any_fg_post_keep=False
+                "max_cls_prob": [],
+                "max_mask_prob": [],
+            }
+
             for images, targets in val_loader:
                 images = [img.to(device) for img in images]
                 outputs = model(images)  # inference path
 
                 for out, t in zip(outputs, targets):
+                    inf_dbg["n"] += 1
+
+                    # counts
+                    if out["masks"].numel() == 0:
+                        inf_dbg["masks_empty"] += 1
+                    if out.get("gate_pass") is False:
+                        inf_dbg["gate_fail"] += 1
+                    if int(out.get("num_keep", 0)) == 0:
+                        inf_dbg["num_keep0"] += 1
+                    if bool(out.get("any_fg_pre_keep", False)) and (not bool(out.get("any_fg_post_keep", False))):
+                        inf_dbg["cls_filtered_all_fg"] += 1
+
+                    # collect scalars (already returned by model.inference)
+                    inf_dbg["max_cls_prob"].append(float(out.get("max_cls_prob", 0.0)))
+                    inf_dbg["max_mask_prob"].append(float(out.get("max_mask_prob", 0.0)))
+
                     global_idx = int(t["image_id"].item())
                     sample = full_dataset.samples[global_idx]
                     img_path = sample["image_path"]
@@ -439,6 +470,40 @@ def run_cv(
                         pred_ann = rle_encode(union_up)
 
                     oof_pred[global_idx] = pred_ann
+
+        # ---- Fold inference debug summary (single structured log) ----
+        n = max(int(inf_dbg["n"]), 1)
+
+        max_cls = torch.tensor(inf_dbg["max_cls_prob"], dtype=torch.float32) if inf_dbg["max_cls_prob"] else torch.tensor([0.0])
+        max_msk = torch.tensor(inf_dbg["max_mask_prob"], dtype=torch.float32) if inf_dbg["max_mask_prob"] else torch.tensor([0.0])
+
+        collapse_logger.debug_event(
+            "oof_inference_debug",
+            {
+                "fold": fold + 1,
+                "val_samples": int(inf_dbg["n"]),
+                "masks_empty": int(inf_dbg["masks_empty"]),
+                "gate_fail": int(inf_dbg["gate_fail"]),
+                "num_keep0": int(inf_dbg["num_keep0"]),
+                "cls_filtered_all_fg": int(inf_dbg["cls_filtered_all_fg"]),
+                "rates": {
+                    "masks_empty": inf_dbg["masks_empty"] / n,
+                    "gate_fail": inf_dbg["gate_fail"] / n,
+                    "num_keep0": inf_dbg["num_keep0"] / n,
+                    "cls_filtered_all_fg": inf_dbg["cls_filtered_all_fg"] / n,
+                },
+                "max_cls_prob": {
+                    "mean": float(max_cls.mean().item()),
+                    "p95": float(max_cls.quantile(0.95).item()),
+                    "max": float(max_cls.max().item()),
+                },
+                "max_mask_prob": {
+                    "mean": float(max_msk.mean().item()),
+                    "p95": float(max_msk.quantile(0.95).item()),
+                    "max": float(max_msk.max().item()),
+                },
+            },
+        )
 
         # ---- Fold metric ----
         fold_solution = solution_df.iloc[val_idx].reset_index(drop=True)
