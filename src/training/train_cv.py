@@ -66,11 +66,13 @@ def build_solution_df(dataset):
     Build Kaggle-style solution_df for the FULL training dataset.
 
     - row_id: image basename stem (matches mask naming convention)
-    - annotation: RLE of union mask, or "authentic"
+    - annotation:
+        * "authentic" if the image is authentic (folder truth), OR if forged but no positive pixels
+        * RLE of union mask if forged AND mask has any positive pixel
     - shape: JSON "[H, W]" from the original image size
 
-    Also returns `y_strat`: 0/1 labels aligned with ForgeryDataset.__getitem__:
-      forged only if (is_forged == True) AND (mask has any positive pixel).
+    Returns `y_strat`: 0/1 labels aligned with new ForgeryDataset semantics:
+      y_strat == sample["is_forged"] (directory truth ONLY).
     """
     gt_rows = []
     y_strat = np.zeros(len(dataset), dtype=np.int64)
@@ -84,10 +86,17 @@ def build_solution_df(dataset):
         with Image.open(img_path) as im:
             w, h = im.size
 
-        ann = "authentic"
-        forged_effective = False
+        is_forged = bool(sample.get("is_forged", False))
+        y_strat[idx] = 1 if is_forged else 0
 
-        if sample.get("is_forged", False) and mask_path and Path(mask_path).exists():
+        # Authentic: always "authentic" annotation (decoupled from masks)
+        if not is_forged:
+            gt_rows.append({"row_id": row_id, "annotation": "authentic", "shape": json.dumps([h, w])})
+            continue
+
+        # Forged: localize if mask exists and has any fg pixels; otherwise "authentic"
+        ann = "authentic"
+        if mask_path and Path(mask_path).exists():
             m = np.load(mask_path)
 
             # allow either (H,W) or (K,H,W); union instances if needed
@@ -98,16 +107,11 @@ def build_solution_df(dataset):
 
             if m.sum() > 0:
                 ann = rle_encode(m)
-                forged_effective = True
 
-        y_strat[idx] = 1 if forged_effective else 0
-        gt_rows.append(
-            {"row_id": row_id, "annotation": ann, "shape": json.dumps([h, w])}
-        )
+        gt_rows.append({"row_id": row_id, "annotation": ann, "shape": json.dumps([h, w])})
 
     solution_df = pd.DataFrame(gt_rows)
     return solution_df, y_strat
-
 
 def make_datasets(train_transform=None, val_transform=None):
     """

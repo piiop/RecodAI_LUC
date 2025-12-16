@@ -13,7 +13,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
-from src.data.dataloader import ForgeryDataset, get_train_transform, make_groupkfold_splits
+from src.data.dataloader import ForgeryDataset, get_train_transform, detection_collate_fn
 
 from src.models.mask2former_v1 import Mask2FormerForgeryModel
 from src.utils.seed_logging_utils import setup_seed, log_seed_info
@@ -101,7 +101,8 @@ def run_full_train(
         shuffle=True,
         collate_fn=collate_batch,
         num_workers=4,          # try 4 first; can test 8 later
-        pin_memory=True,        
+        pin_memory=True,
+        collate_fn=detection_collate_fn,        
         persistent_workers=True 
     )
 
