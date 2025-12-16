@@ -75,7 +75,6 @@ def build_solution_df(dataset):
       y_strat == sample["is_forged"] (directory truth ONLY).
     """
     gt_rows = []
-    y_strat = np.zeros(len(dataset), dtype=np.int64)
 
     for idx, sample in enumerate(dataset.samples):
         img_path = sample["image_path"]
@@ -87,7 +86,6 @@ def build_solution_df(dataset):
             w, h = im.size
 
         is_forged = bool(sample.get("is_forged", False))
-        y_strat[idx] = 1 if is_forged else 0
 
         # Authentic: always "authentic" annotation (decoupled from masks)
         if not is_forged:
@@ -111,7 +109,7 @@ def build_solution_df(dataset):
         gt_rows.append({"row_id": row_id, "annotation": ann, "shape": json.dumps([h, w])})
 
     solution_df = pd.DataFrame(gt_rows)
-    return solution_df, y_strat
+    return solution_df
 
 def make_datasets(train_transform=None, val_transform=None):
     """
@@ -169,7 +167,7 @@ def run_cv(
     full_dataset, ds_train, ds_val = make_datasets(
         train_transform=train_transform, val_transform=val_transform
     )
-    solution_df, is_forged = build_solution_df(full_dataset)
+    solution_df = build_solution_df(full_dataset)
 
     n_samples = len(full_dataset)
     print(f"Built solution_df with {len(solution_df)} rows")
