@@ -177,6 +177,9 @@ def run_cv(
     splits = make_groupkfold_splits(full_dataset, n_splits=num_folds)
 
     oof_pred = [None] * n_samples
+    # --- stats for OOF prediction analysis ---
+    oof_pred_is_auth = np.zeros(n_samples, dtype=np.uint8)   # 1 if predicted "authentic"
+    oof_pred_area_ratio = np.full(n_samples, np.nan, dtype=np.float32)  # only for non-auth preds    
     fold_scores = []
 
     mk = sanitize_model_kwargs(model_kwargs or {})
@@ -423,7 +426,8 @@ def run_cv(
                 "masks_empty": 0,
                 "gate_fail": 0,
                 "num_keep0": 0,
-                "cls_filtered_all_fg": 0,  # any_fg_pre_keep=True but any_fg_post_keep=False
+                "cls_filtered_all_fg": 0,      # any_fg_pre_keep=True but any_fg_post_keep=False
+                "no_fg_pre_keep": 0,           # any_fg_pre_keep == False  (mask head dead)
                 "max_cls_prob": [],
                 "max_mask_prob": [],
             }
@@ -444,6 +448,8 @@ def run_cv(
                         inf_dbg["num_keep0"] += 1
                     if bool(out.get("any_fg_pre_keep", False)) and (not bool(out.get("any_fg_post_keep", False))):
                         inf_dbg["cls_filtered_all_fg"] += 1
+                    if not bool(out.get("any_fg_pre_keep", False)):
+                        inf_dbg["no_fg_pre_keep"] += 1    
 
                     # collect scalars (already returned by model.inference)
                     inf_dbg["max_cls_prob"].append(float(out.get("max_cls_prob", 0.0)))
@@ -467,6 +473,8 @@ def run_cv(
 
                     if out["masks"].numel() == 0:
                         pred_ann = "authentic"
+                        oof_pred_is_auth[global_idx] = 1
+                        oof_pred_area_ratio[global_idx] = np.nan
                     else:
                         union_small = (out["masks"] > 0).any(dim=0).float()[None, None]
                         union_up = (
@@ -477,6 +485,9 @@ def run_cv(
                             .astype(np.uint8)
                         )
                         pred_ann = rle_encode(union_up)
+
+                        oof_pred_is_auth[global_idx] = 0
+                        oof_pred_area_ratio[global_idx] = float(union_up.sum() / max(h * w, 1))
 
                     oof_pred[global_idx] = pred_ann
 
@@ -495,11 +506,13 @@ def run_cv(
                 "gate_fail": int(inf_dbg["gate_fail"]),
                 "num_keep0": int(inf_dbg["num_keep0"]),
                 "cls_filtered_all_fg": int(inf_dbg["cls_filtered_all_fg"]),
+                "no_fg_pre_keep": int(inf_dbg["no_fg_pre_keep"]),
                 "rates": {
                     "masks_empty": inf_dbg["masks_empty"] / n,
                     "gate_fail": inf_dbg["gate_fail"] / n,
                     "num_keep0": inf_dbg["num_keep0"] / n,
                     "cls_filtered_all_fg": inf_dbg["cls_filtered_all_fg"] / n,
+                    "no_fg_pre_keep": inf_dbg["no_fg_pre_keep"] / n,
                 },
                 "max_cls_prob": {
                     "mean": float(max_cls.mean().item()),
@@ -511,6 +524,23 @@ def run_cv(
                     "p95": float(max_msk.quantile(0.95).item()),
                     "max": float(max_msk.max().item()),
                 },
+            },
+        )
+
+        # ---- Fold-level OOF distribution + area stats ----
+        vi = np.asarray(val_idx, dtype=np.int64)
+        fold_auth_frac = float(oof_pred_is_auth[vi].mean()) if vi.size else 0.0
+        fold_non_auth = (oof_pred_is_auth[vi] == 0)
+        fold_area_mean = float(np.nanmean(oof_pred_area_ratio[vi][fold_non_auth])) if fold_non_auth.any() else 0.0
+
+        collapse_logger.debug_event(
+            "oof_pred_area_stats",
+            {
+                "fold": fold + 1,
+                "val_samples": int(vi.size),
+                "pred_auth_frac": fold_auth_frac,
+                "pred_non_auth_count": int(fold_non_auth.sum()),
+                "pred_non_auth_area_ratio_mean": fold_area_mean,
             },
         )
 
@@ -540,6 +570,27 @@ def run_cv(
     # ---- Overall OOF ----
     oof_solution = solution_df.copy()
     oof_submission = pd.DataFrame({"row_id": oof_solution["row_id"], "annotation": oof_pred})
+
+    # ---- Overall OOF prediction distribution + area stats ----
+    overall_auth_frac = float(oof_pred_is_auth.mean()) if n_samples else 0.0
+    overall_non_auth = (oof_pred_is_auth == 0)
+    overall_area_mean = float(np.nanmean(oof_pred_area_ratio[overall_non_auth])) if overall_non_auth.any() else 0.0
+
+    # Use a dedicated logger entry so it’s easy to find across folds/runs
+    oof_logger = ClsCollapseLogger(
+        out_dir=debug_out_dir,
+        run_name="cv_oof_summary",
+        enable_debug=bool(enable_debug_logs),
+    )
+    oof_logger.debug_event(
+        "oof_pred_area_stats",
+        {
+            "val_samples": int(n_samples),
+            "pred_auth_frac": overall_auth_frac,
+            "pred_non_auth_count": int(overall_non_auth.sum()),
+            "pred_non_auth_area_ratio_mean": overall_area_mean,
+        },
+    )
 
     oof_score = kaggle_score(
         oof_solution.copy(),
