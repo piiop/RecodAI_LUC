@@ -99,10 +99,9 @@ def run_full_train(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        collate_fn=collate_batch,
+        collate_fn=detection_collate_fn,
         num_workers=4,          # try 4 first; can test 8 later
-        pin_memory=True,
-        collate_fn=detection_collate_fn,        
+        pin_memory=True,       
         persistent_workers=True 
     )
 

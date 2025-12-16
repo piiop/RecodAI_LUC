@@ -16,7 +16,6 @@ from scipy.optimize import linear_sum_assignment
 
 # ------------------- Basic losses -------------------
 
-
 def sigmoid_ce_loss(inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
     """
     BCE on logits, per-instance mean.
@@ -31,7 +30,6 @@ def sigmoid_ce_loss(inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor
     return F.binary_cross_entropy_with_logits(
         inputs, targets, reduction="none"
     ).mean(dim=(1, 2))
-
 
 def dice_loss(inputs: torch.Tensor, targets: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     """
@@ -53,9 +51,7 @@ def dice_loss(inputs: torch.Tensor, targets: torch.Tensor, eps: float = 1e-6) ->
     loss = 1.0 - (numerator + eps) / (denominator)
     return loss
 
-
 # ------------------- Matching cost & Hungarian matching -------------------
-
 
 def match_cost(
     pred_masks: torch.Tensor,
@@ -98,7 +94,6 @@ def match_cost(
 
     cost = cost_bce * bce + cost_dice * dice
     return cost
-
 
 def hungarian_match(
     mask_logits: torch.Tensor,
@@ -208,6 +203,10 @@ def compute_losses(
     loss_weight_img_auth: float = 1.0,
     loss_weight_auth_penalty: float = 1.0,
     authenticity_penalty_weight: float = 5.0,
+    loss_weight_presence_auth: float = 0.5,
+    loss_weight_forged_presence: float = 0.5,
+    forged_presence_tau: float = 0.10,
+    presence_use_max: bool = True,
     auth_penalty_cls_threshold: float = 0.5,
     auth_penalty_temperature: float = 0.1,
     logger=None,
@@ -311,6 +310,46 @@ def compute_losses(
     mask_probs = torch.sigmoid(mask_logits)        # [B, Q, Hm, Wm]
     mask_mass = mask_probs.flatten(2).mean(-1)     # [B, Q]
 
+    # -------------------------
+    # Detection presence coupling
+    # presence_prob ~ "prob at least one query is positive AND has mask mass"
+    # -------------------------
+    cls_prob = torch.sigmoid(class_logits)         # [B, Q]
+    qscore = cls_prob * mask_mass                  # [B, Q]
+
+    if presence_use_max:
+        presence_prob = qscore.max(dim=1).values   # [B]
+    else:
+        # smoother alternative; can be helpful if max is too peaky
+        presence_prob = 1.0 - torch.exp(-qscore.sum(dim=1)).clamp(0.0, 1.0)  # [B]
+
+    presence_prob = presence_prob.clamp(1e-6, 1.0 - 1e-6)
+
+    # Couple presence to image label (both classes)
+    loss_presence_auth = F.binary_cross_entropy(presence_prob, img_targets)
+
+    # Enforce forged images have some detection mass (prevents "all authentic" collapse)
+    forged_mask = (img_targets == 1.0).to(presence_prob.dtype)  # [B]
+    tau = float(forged_presence_tau)
+    # hinge: if forged and presence_prob < tau => penalty
+    per_img_forged = F.relu(tau - presence_prob) * forged_mask
+    # normalize by batch size (stable even if no forged in batch)
+    loss_forged_presence = per_img_forged.sum() / max(B, 1)
+
+    if logger is not None:
+        logger.debug_event(
+            "loss_presence_stats",
+            {
+                **ctx,
+                "presence_mean": float(presence_prob.mean().item()) if B > 0 else 0.0,
+                "presence_min": float(presence_prob.min().item()) if B > 0 else 0.0,
+                "presence_max": float(presence_prob.max().item()) if B > 0 else 0.0,
+                "tau": tau,
+                "loss_presence_auth": float(loss_presence_auth.detach().cpu()),
+                "loss_forged_presence": float(loss_forged_presence.detach().cpu()),
+            },
+        )
+
     thr = float(auth_penalty_cls_threshold)
     temp = max(float(auth_penalty_temperature), 1e-6)
     soft_cls_weight = torch.sigmoid((class_logits - thr) / temp)  # [B, Q]
@@ -342,6 +381,8 @@ def compute_losses(
         + loss_weight_mask_cls * loss_mask_cls
         + loss_weight_img_auth * loss_img_auth
         + loss_weight_auth_penalty * loss_auth_penalty
+        + loss_weight_presence_auth * loss_presence_auth
+        + loss_weight_forged_presence * loss_forged_presence        
     )
 
     return {
@@ -350,7 +391,7 @@ def compute_losses(
         "loss_mask_cls": loss_mask_cls,
         "loss_img_auth": loss_img_auth,
         "loss_auth_penalty": loss_auth_penalty,
+        "loss_presence_auth": loss_presence_auth,
+        "loss_forged_presence": loss_forged_presence,        
         "loss_total": loss_total,
     }
-
-

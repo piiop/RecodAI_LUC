@@ -24,7 +24,8 @@ python -m src.cli cv \
   -c base.yaml \
   -o model.loss_weight_mask_cls=0.25 \
   -o model.default_cls_threshold=0.2 \
-  -o trainer.name=base_wgroupkfold
+  -o trainer.name=base_wgroupkfold \
+  -o trainer.epochs=10
 
 
 # =========================

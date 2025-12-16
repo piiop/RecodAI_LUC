@@ -27,7 +27,8 @@ from src.data.dataloader import (
     ForgeryDataset,
     get_train_transform,
     get_val_transform,
-    make_groupkfold_splits
+    make_groupkfold_splits,
+    dump_random_sample_csv
 )
 from src.inference.postprocess import rle_encode
 from src.models.mask2former_v1 import Mask2FormerForgeryModel
@@ -204,6 +205,12 @@ def run_cv(
             num_workers=4,
             pin_memory=True,
             persistent_workers=True,
+        )
+
+        dump_random_sample_csv(
+            out_csv=os.path.join(out_dir, "sanity_random_200.csv"),
+            n=200,
+            seed=42,
         )
 
         model = Mask2FormerForgeryModel(**mk).to(device)

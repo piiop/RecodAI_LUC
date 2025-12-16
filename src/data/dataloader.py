@@ -389,3 +389,44 @@ def create_groupkfold_loaders_for_fold(
     )
 
     return train_loader, val_loader
+
+def dump_random_sample_csv(
+    out_csv: str | Path,
+    n: int = 200,
+    seed: int = 42,
+) -> None:
+    """
+    Dump ~n random samples (transform=None) to CSV with quick sanity columns:
+      is_forged_folder, image_label, num_instances, union_sum, max_instance_sum
+    """
+    import pandas as pd
+
+    ds = ForgeryDataset(transform=None)
+    rng = np.random.default_rng(seed)
+    n = int(min(n, len(ds)))
+    idxs = rng.choice(len(ds), size=n, replace=False).tolist()
+
+    rows = []
+    for i in idxs:
+        _, tgt = ds[i]
+        masks = tgt["masks"]  # [K,H,W] uint8 (may be empty)
+
+        num_instances = int(masks.shape[0])
+        union_sum = int(masks.sum().item()) if masks.numel() else 0
+        max_instance_sum = int(masks.flatten(1).sum(1).max().item()) if num_instances > 0 else 0
+
+        sample = ds.samples[i]
+        rows.append(
+            {
+                "idx": int(i),
+                "is_forged_folder": bool(sample.get("is_forged", False)),
+                "image_label": float(tgt["image_label"].item()),
+                "num_instances": num_instances,
+                "union_sum": union_sum,
+                "max_instance_sum": max_instance_sum,
+            }
+        )
+
+    out_csv = Path(out_csv)
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_csv(out_csv, index=False)
