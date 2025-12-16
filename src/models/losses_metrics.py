@@ -308,6 +308,25 @@ def compute_losses(
     # Differentiable authenticity penalty (ONLY on authentic images)
     # -------------------------
     mask_probs = torch.sigmoid(mask_logits)        # [B, Q, Hm, Wm]
+
+    # -------------------------
+    # Debug: mean predicted foreground prob per query (pre any inference filtering)
+    # -------------------------
+    if logger is not None:
+        # per-query mean over batch + pixels -> [Q]
+        fg_per_query = mask_probs.mean(dim=(0, 2, 3))  # [Q]
+        fg_flat = fg_per_query.flatten()
+        logger.debug_event(
+            "train_fg_prob_per_query",
+            {
+                **ctx,
+                "Q": int(Q),
+                "fg_prob_per_query": fg_per_query.detach().cpu().tolist(),
+                "fg_prob_mean": float(fg_flat.mean().item()) if fg_flat.numel() else 0.0,
+                "fg_prob_p95": float(fg_flat.quantile(0.95).item()) if fg_flat.numel() else 0.0,
+                "fg_prob_max": float(fg_flat.max().item()) if fg_flat.numel() else 0.0,
+            },
+        )
     mask_mass = mask_probs.flatten(2).mean(-1)     # [B, Q]
 
     # -------------------------
