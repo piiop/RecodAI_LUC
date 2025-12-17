@@ -217,7 +217,7 @@ def run_cv(
         model = Mask2FormerForgeryModel(**mk).to(device)
         optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
 
-        # fold logger (mirrors train_full)
+        # fold logger
         run_name = f"cv_fold{fold + 1}"
         collapse_logger = ClsCollapseLogger(
             out_dir=debug_out_dir,
