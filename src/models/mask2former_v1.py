@@ -616,16 +616,18 @@ class Mask2FormerForgeryModel(nn.Module):
         pretrained_backbone=True,
         backbone_trainable=True,
         fpn_out_channels=256,
-        authenticity_penalty_weight=5.0,
-        auth_gate_forged_threshold=0.5,
-        default_mask_threshold=0.5,
-        default_cls_threshold=0.5,
+        # inference thresholds        
+        auth_gate_forged_threshold=0.0,
+        default_mask_threshold=0.0,
+        default_cls_threshold=0.0,
+        # training thresholds
         auth_penalty_cls_threshold=None,
         auth_penalty_temperature=0.1,
         # matching weights
         cost_bce=1.0,
         cost_dice=1.0,
         # loss weights (for convenience total loss)
+        authenticity_penalty_weight=5.0,        
         loss_weight_mask_bce=1.0,
         loss_weight_mask_dice=1.0,
         loss_weight_mask_cls=1.0,
@@ -855,6 +857,8 @@ class Mask2FormerForgeryModel(nn.Module):
 
             # ---- pre-filter stats (always computed) ----
             gate_pass = forged_prob >= auth_gate_forged_threshold
+            # TEMPORARY DIAGNOSTIC: decouple inference from image gate entirely
+            gate_pass = True
             max_cls_prob = cls_probs[b].max().item() if Q > 0 else 0.0
             num_keep = int((cls_probs[b] > cls_threshold).sum().item()) if Q > 0 else 0
             max_mask_prob = mask_probs[b].max().item() if Q > 0 else 0.0

@@ -33,7 +33,7 @@ from src.utils.wandb_utils import init_wandb_run, log_config, finish_run
 
 
 # ---------------------------------------------------------------------------
-# Experiment presets (edit this list to define your sweeps)
+# Experiment presets
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -130,7 +130,7 @@ def run_single_experiment(
             lr=exp.lr,
             weight_decay=exp.weight_decay,
             device=device,
-            train_transform=None,  # plug in your train/val transforms here when ready
+            train_transform=None,
             val_transform=None,
             out_dir=str(out_dir),
         )
@@ -190,7 +190,6 @@ def _flatten_infer_stats(batch_outputs, gate, cls_thr, mask_thr):
             "image_forged_prob": float(o.get("image_authenticity", 0.0)),
         })
     return rows
-
 
 def run_threshold_sweep(
     model,

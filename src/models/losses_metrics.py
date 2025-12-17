@@ -205,6 +205,7 @@ def compute_losses(
     authenticity_penalty_weight: float = 5.0,
     loss_weight_presence_auth: float = 0.5,
     loss_weight_forged_presence: float = 0.5,
+    # training thresholds
     forged_presence_tau: float = 0.10,
     presence_use_max: bool = True,
     auth_penalty_cls_threshold: float = 0.5,

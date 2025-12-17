@@ -109,7 +109,7 @@ def run_full_train(
     if "d_model" not in mk:
         mk["d_model"] = 256  
 
-    mk = sanitize_model_kwargs(model_kwargs)
+    mk = sanitize_model_kwargs(mk)
     model = Mask2FormerForgeryModel(
         **mk,
     ).to(device)

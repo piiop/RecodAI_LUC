@@ -3,10 +3,6 @@
 experiment:
   name: baseline
 
-data:
-  img_size: 256
-  use_supplemental: true
-
 model:
   type: mask2former_v1
 
@@ -25,11 +21,11 @@ model:
   backbone_trainable: true
   fpn_out_channels: 256
 
-  # Thresholds / penalties
-  authenticity_penalty_weight: 5.0
-  auth_gate_forged_threshold: 0.5
-  default_mask_threshold: 0.5
-  default_cls_threshold: 0.5
+  # Inference Thresholds
+  auth_gate_forged_threshold: 0.0
+  default_mask_threshold: 0.0
+  default_cls_threshold: 0.0
+  # Training Thresholds
   auth_penalty_cls_threshold: 0.5
   auth_penalty_temperature: 0.1
 
@@ -40,6 +36,7 @@ model:
     mask_cls: 1.0
     img_auth: 1.0
     auth_penalty: 1.0
+    authenticity_penalty_weight: 5.0  
 
 trainer:
   # Used by BOTH cv and full-train
