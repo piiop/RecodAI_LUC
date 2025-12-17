@@ -147,7 +147,7 @@ def run_cv(
     val_transform=None,
     out_dir="experiments/oof_results",
     model_kwargs=None,
-    debug_out_dir="experiments/cls_collapse",
+    debug_out_dir=None,
     enable_debug_logs=True,
 ):
     """
@@ -157,6 +157,9 @@ def run_cv(
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     os.makedirs(out_dir, exist_ok=True)
+    
+    if debug_out_dir is None:
+        debug_out_dir = out_dir    
 
     if train_transform is None:
         train_transform = get_train_transform()

@@ -42,9 +42,7 @@ python -m src.cli full-train \
 # mini_smoke cv
 python -m src.cli cv \
   -c base.yaml \
-  -o model.loss_weight_mask_cls=0.25 \
-  -o model.default_cls_threshold=0.2 \
-  -o trainer.name=gate_pass_TRUE \
+  -o trainer.name=inf_thresh_off\
   -o trainer.epochs=5
 
 

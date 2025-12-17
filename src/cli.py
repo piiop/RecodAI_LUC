@@ -76,6 +76,7 @@ def _run_cv(args):
             weight_decay=t.get("weight_decay", 1e-4),
             device=device,
             out_dir=str(out_dir),
+            debug_out_dir=str(out_dir),
             train_transform=None,
             val_transform=None,
             model_kwargs=m,
