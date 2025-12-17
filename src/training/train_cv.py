@@ -72,8 +72,6 @@ def build_solution_df(dataset):
         * RLE of union mask if forged AND mask has any positive pixel
     - shape: JSON "[H, W]" from the original image size
 
-    Returns `y_strat`: 0/1 labels aligned with new ForgeryDataset semantics:
-      y_strat == sample["is_forged"] (directory truth ONLY).
     """
     gt_rows = []
 

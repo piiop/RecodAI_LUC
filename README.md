@@ -43,17 +43,27 @@ project_root/
 │   ├── training/
 │   │   ├── train_full.py
 │   │   ├── train_cv.py
-│   │   └── utils_trainer.py
 │   ├── inference/
 │   │   ├── infer_multi_configs.py
+│   │   ├── auth_gate_sweep.py
+│   │   ├── cls_threshold_sweep.py
+│   │   ├── loss_weight_mask_cls_sweep.py
 │   │   └── postprocess.py
 │   ├── utils/
 │   │   ├── wandb_utils.py
 │   │   ├── config_utils.py
+│   │   ├── cls_collapse_logger.py
 │   │   └── seed_logging_utils.py
 │   └── cli.py
 ├── experiments/
 │   ├── oof_results/
+│   │   ├── minismoke
+│   │   └── ...
+│   ├── cls_collapse/
+│   ├── cls_thresh_w0.25/
+│   ├── cls_threshold_sweep/
+│   ├── auth_gate_sweep/
+│   ├── auth_gate_w0.25/
 │   ├── wandb/
 │   └── ablation_plans.md
 ├── weights/
@@ -67,7 +77,10 @@ project_root/
     ├── baseline_prototype.ipynb
     ├── cv_analysis.ipynb
     ├── kagglelb_analysis.ipynb
+    ├── sweeps_analysis.ipynb
     └── debugger.ipynb
+
+
 Overview
 
 This structure allows:

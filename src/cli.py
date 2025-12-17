@@ -63,6 +63,10 @@ def _run_cv(args):
         name=t.get("name", "cv"),
     )
 
+    base_out_dir = Path(t.get("out_dir", "experiments/oof_results"))
+    run_name = t.get("name", "cv")
+    out_dir = base_out_dir / run_name
+
     try:
         run_cv(
             num_folds=t.get("n_folds", 5),
@@ -71,7 +75,7 @@ def _run_cv(args):
             lr=t.get("lr", 1e-4),
             weight_decay=t.get("weight_decay", 1e-4),
             device=device,
-            out_dir=t.get("out_dir", "experiments/oof_results"),
+            out_dir=str(out_dir),
             train_transform=None,
             val_transform=None,
             model_kwargs=m,
