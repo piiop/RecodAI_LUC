@@ -370,11 +370,8 @@ def compute_losses(
             },
         )
 
-    thr = float(auth_penalty_cls_threshold)
-    temp = max(float(auth_penalty_temperature), 1e-6)
-    soft_cls_weight = torch.sigmoid((class_logits - thr) / temp)  # [B, Q]
-
-    per_image_penalty = (soft_cls_weight * mask_mass).mean(dim=1)  # [B]
+    # Penalize mask mass directly on authentic images (no cls gating)
+    per_image_penalty = mask_mass.mean(dim=1)  # [B]
     authentic_mask = (img_targets == 0.0).to(per_image_penalty.dtype)  # [B]
     penalty = (per_image_penalty * authentic_mask).sum() / max(B, 1)
     loss_auth_penalty = authenticity_penalty_weight * penalty
@@ -384,14 +381,11 @@ def compute_losses(
             "loss_auth_penalty_stats",
             {
                 **ctx,
-                "thr": thr,
-                "temp": temp,
                 "authentic_frac": float(authentic_mask.mean().item()) if B > 0 else 0.0,
                 "per_image_penalty_mean": float(per_image_penalty.mean().item()) if B > 0 else 0.0,
                 "loss_auth_penalty": float(loss_auth_penalty.detach().cpu()),
             },
         )
-
     # -------------------------
     # Weighted total loss
     # -------------------------
