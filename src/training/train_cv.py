@@ -31,7 +31,7 @@ from src.data.dataloader import (
     dump_random_sample_csv
 )
 from src.inference.postprocess import rle_encode
-from src.models.mask2former_v1 import Mask2FormerForgeryModel
+from src.models.mask2former_v2 import Mask2FormerForgeryModel
 from src.models.kaggle_metric import score as kaggle_score
 from src.utils.seed_logging_utils import setup_seed, log_seed_info
 from src.utils.wandb_utils import (

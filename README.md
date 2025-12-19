@@ -37,7 +37,7 @@ project_root/
 │   ├── data/
 │   │   └── dataloader.py
 │   ├── models/
-│   │   ├── mask2former_v1.py
+│   │   ├── mask2former_v2.py
 │   │   ├── kaggle_metric.py
 │   │   └── losses_metrics.py
 │   ├── training/

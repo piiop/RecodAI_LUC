@@ -29,7 +29,7 @@ from src.data.dataloader import (
     get_val_transform,
     detection_collate_fn,
 )
-from src.models.mask2former_v1 import Mask2FormerForgeryModel
+from src.models.mask2former_v2 import Mask2FormerForgeryModel
 from src.models.kaggle_metric import score as kaggle_score
 from src.inference.postprocess import rle_encode
 from src.training.train_cv import build_solution_df

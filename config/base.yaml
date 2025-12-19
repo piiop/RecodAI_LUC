@@ -4,7 +4,7 @@ experiment:
   name: baseline
 
 model:
-  type: mask2former_v1
+  type: mask2former_v2
 
   # Transformer
   num_queries: 15
