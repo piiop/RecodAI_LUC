@@ -619,6 +619,11 @@ class Mask2FormerForgeryModel(nn.Module):
         # inference thresholds        
         default_mask_threshold=0.0,
         default_cls_threshold=0.0,
+        # train-aligned inference knobs
+        default_qscore_threshold=None,
+        default_topk=None,
+        default_min_mask_mass=None,
+        default_presence_threshold=None,
         # training thresholds
         auth_penalty_cls_threshold=None,
         auth_penalty_temperature=0.1,
@@ -657,6 +662,10 @@ class Mask2FormerForgeryModel(nn.Module):
             else default_cls_threshold,
         )
         self.auth_penalty_temperature = auth_penalty_temperature
+        self.default_qscore_threshold = default_qscore_threshold
+        self.default_topk = default_topk
+        self.default_min_mask_mass = default_min_mask_mass
+        self.default_presence_threshold = default_presence_threshold
 
         # -----------------------------
         # Matching weights
@@ -812,8 +821,7 @@ class Mask2FormerForgeryModel(nn.Module):
         class_logits = self.class_head(hs).squeeze(-1)  # [B,Q]
         mask_embeddings = self.mask_embed_head(hs)       # [B,Q,C]
         mask_logits = torch.einsum("bqc,bchw->bqhw", mask_embeddings, mask_feats)
-        img_logits = self.img_head(fpn_feats[-1]).squeeze(-1)  # [B]
-        return mask_logits, class_logits, img_logits
+        return mask_logits, class_logits
 
     def inference(
         self,
@@ -900,10 +908,13 @@ class Mask2FormerForgeryModel(nn.Module):
             if min_mask_mass is not None:
                 keep = keep & (mask_mass[b] > float(min_mask_mass))
 
-            num_keep = int(keep.sum().detach().cpu())
             gate_pass = True
             if presence_threshold is not None:
                 gate_pass = bool((presence_prob[b] > float(presence_threshold)).detach().cpu())
+                if not gate_pass:
+                    keep = torch.zeros(Q, dtype=torch.bool, device=mask_logits.device)
+
+            num_keep = int(keep.sum().detach().cpu())
 
             if num_keep == 0:
                 outputs.append({
