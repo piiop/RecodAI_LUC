@@ -725,28 +725,30 @@ class Mask2FormerForgeryModel(nn.Module):
         """
         images: Tensor [B, 3, H, W] or list[Tensor(C,H,W)]
         targets: list[dict] or None
+
+        Train/inference alignment:
+        qscore[q]      = sigmoid(class_logit[q]) * mean(sigmoid(mask_logit[q]))
+        presence_prob  = max_q qscore[q]
         """
         if isinstance(images, list):
             images = torch.stack(images, dim=0)
 
         B = images.shape[0]
 
+        # Backbone + pixel decoder
         fpn_feats = self.backbone(images)  # [P2, P3, P4, P5]
-
-        # Mask2Former pixel decoder produces:
-        # - memory_feats: [P3,P4,P5] (for transformer decoder)
-        # - mask_feats: high-res mask features at P2 resolution
         memory_feats, mask_feats = self.pixel_decoder(fpn_feats, self.position_encoding)
 
+        # Build positional encodings per feature level (match forward_logits / decoder API)
         pos_list = [self.position_encoding(x) for x in memory_feats]
-        hs_all = self.transformer_decoder(memory_feats, pos_list)  # [num_layers, B, Q, C]
 
-        hs = hs_all[-1]  # [B, Q, C]
+        # Transformer decoder (take last layer output)
+        hs = self.transformer_decoder(memory_feats, pos_list)[-1]  # [B, Q, C]
 
         # Heads
-        class_logits = self.class_head(hs).squeeze(-1)     # [B, Q]
-        mask_embeddings = self.mask_embed_head(hs)         # [B, Q, mask_dim]
-        mask_logits = torch.einsum("bqc, bchw -> bqhw", mask_embeddings, mask_feats)
+        class_logits = self.class_head(hs).squeeze(-1)  # [B, Q] (or [B,Q] after squeeze)
+        mask_embeddings = self.mask_embed_head(hs)      # [B, Q, mask_dim]
+        mask_logits = torch.einsum("bqc, bchw -> bqhw", mask_embeddings, mask_feats)  # [B,Q,Hm,Wm]
 
         # ---- training loss ----
         if self.training and targets is not None:
@@ -757,26 +759,45 @@ class Mask2FormerForgeryModel(nn.Module):
                 targets,
                 cost_bce=self.cost_bce,
                 cost_dice=self.cost_dice,
-                loss_weight_mask_bce=self.loss_weight_mask_bce,
-                loss_weight_mask_dice=self.loss_weight_mask_dice,
-                loss_weight_mask_cls=self.loss_weight_mask_cls,
-                loss_weight_img_auth=self.loss_weight_img_auth,
-                loss_weight_auth_penalty=self.loss_weight_auth_penalty,
-                authenticity_penalty_weight=self.authenticity_penalty_weight,
-                auth_penalty_cls_threshold=self.auth_penalty_cls_threshold,
-                auth_penalty_temperature=self.auth_penalty_temperature,
                 logger=overrides.get("logger", None),
                 debug_ctx=overrides.get("debug_ctx", None),
             )
 
         # ---- inference (also used when targets is None) ----
         overrides = inference_overrides or {}
-        return self.inference(
+
+        preds = self.inference(
             mask_logits=mask_logits,
             class_logits=class_logits,
             mask_threshold=overrides.get("mask_threshold", None),
-            cls_threshold=overrides.get("cls_threshold", None),
+            cls_threshold=overrides.get("cls_threshold", None),               # legacy
+            qscore_threshold=overrides.get("qscore_threshold", None),         # preferred
+            topk=overrides.get("topk", None),
+            min_mask_mass=overrides.get("min_mask_mass", None),
+            presence_threshold=overrides.get("presence_threshold", None),
         )
+
+        # return raw logits/probs for debugging/analysis
+        if overrides.get("return_logits", False) or overrides.get("return_raw", False):
+            # Compute train-aligned presence/activity for callers that want tensors back
+            mask_probs = torch.sigmoid(mask_logits)
+            cls_probs = torch.sigmoid(class_logits if class_logits.dim() == 2 else class_logits.squeeze(-1))
+            mask_mass = mask_probs.flatten(2).mean(-1)   # [B,Q]
+            qscore = cls_probs * mask_mass               # [B,Q]
+            presence_prob = qscore.max(dim=1).values     # [B]
+
+            return {
+                "preds": preds,
+                "mask_logits": mask_logits,
+                "class_logits": class_logits,
+                "mask_probs": mask_probs,
+                "cls_probs": cls_probs,
+                "mask_mass": mask_mass,
+                "qscore": qscore,
+                "presence_prob": presence_prob,
+            }
+
+        return preds
 
     @torch.no_grad()
     def forward_logits(self, images):
@@ -794,97 +815,157 @@ class Mask2FormerForgeryModel(nn.Module):
         img_logits = self.img_head(fpn_feats[-1]).squeeze(-1)  # [B]
         return mask_logits, class_logits, img_logits
 
-    # ------------------- Losses & matching -------------------
-    # (in models/losses_metrics.py)
-    # ------------------- Inference -------------------
-
     def inference(
         self,
         mask_logits,
         class_logits,
         mask_threshold=None,
-        cls_threshold=None,
+        cls_threshold=None,          # legacy (kept for backwards compat)
+        qscore_threshold=None,       # threshold on (cls_prob * mask_mass)
+        topk=None,                  # keep top-k queries by qscore (per image)
+        min_mask_mass=None,         # additional filter on mask_mass (fraction of pixels)
+        presence_threshold=None,     # optional “gate” threshold on presence_prob
     ):
         """
         Returns list of dicts per image:
-          - 'masks': [K, Hm, Wm] uint8
-          - 'mask_scores': [K]
-          - 'mask_forgery_scores': [K]
-          - 'image_authenticity': float in [0,1], prob of "forged"
+        - 'masks': [K, Hm, Wm] uint8
+        - 'mask_scores': [K]          (qscore)
+        - 'mask_forgery_scores': [K]  (cls_prob)
+        - 'image_authenticity': float in [0,1], prob of "forged" (presence_prob)
 
+        Train/Inference consistency:
+        qscore[q]   = sigmoid(class_logit[q]) * mean(sigmoid(mask_logit[q]))
+        presence    = max_q qscore[q]
         """
-        B, Q, Hm, Wm = mask_logits.shape
-        mask_probs = torch.sigmoid(mask_logits)
-        cls_probs = torch.sigmoid(class_logits)
+        import torch
 
-        # fall back to model defaults
+        B, Q, Hm, Wm = mask_logits.shape
+
+        # Defaults (kept compatible with existing config knobs if present)
         if mask_threshold is None:
-            mask_threshold = self.default_mask_threshold
-        if cls_threshold is None:
-            cls_threshold = self.default_cls_threshold
+            mask_threshold = getattr(self, "default_mask_threshold", 0.5)
+
+        # Prefer qscore thresholding by default (train-aligned)
+        if qscore_threshold is None:
+            qscore_threshold = getattr(self, "default_qscore_threshold", None)
+
+        if topk is None:
+            topk = getattr(self, "default_topk", None)
+
+        if min_mask_mass is None:
+            min_mask_mass = getattr(self, "default_min_mask_mass", None)
+
+        if presence_threshold is None:
+            presence_threshold = getattr(self, "default_presence_threshold", None)
+
+        # Shapes: allow class_logits to be [B,Q,1]
+        if class_logits.dim() == 3 and class_logits.size(-1) == 1:
+            class_logits = class_logits.squeeze(-1)
+
+        mask_probs = torch.sigmoid(mask_logits)         # [B,Q,H,W]
+        cls_probs = torch.sigmoid(class_logits)         # [B,Q]
+
+        # mask_mass in [0,1]: mean probability mass across pixels
+        mask_mass = mask_probs.flatten(2).mean(-1)      # [B,Q]
+        qscore = cls_probs * mask_mass                  # [B,Q]
+        presence_prob = qscore.max(dim=1).values        # [B]
 
         outputs = []
         for b in range(B):
+            # --- robust logging / debugging (kept + expanded) ---
+            max_cls_prob = float(cls_probs[b].max().detach().cpu())
+            max_mask_prob = float(mask_probs[b].max().detach().cpu())
+            max_qscore = float(qscore[b].max().detach().cpu())
+            any_fg_pre_keep = bool((mask_probs[b] > mask_threshold).any().detach().cpu())
+            mean_mask_mass = float(mask_mass[b].mean().detach().cpu())
+            max_mask_mass = float(mask_mass[b].max().detach().cpu())
+            image_presence = float(presence_prob[b].detach().cpu())
 
-            # TEMPORARY DIAGNOSTIC: decouple inference from image gate entirely
+            # Selection: topk by qscore OR threshold by qscore (preferred) OR legacy cls threshold
+            keep = torch.zeros(Q, dtype=torch.bool, device=mask_logits.device)
+
+            if topk is not None and int(topk) > 0:
+                k = min(int(topk), Q)
+                top_idx = torch.topk(qscore[b], k=k, largest=True).indices
+                keep[top_idx] = True
+            elif qscore_threshold is not None:
+                keep = qscore[b] > float(qscore_threshold)
+            else:
+                # Legacy fallback (not train-aligned, but preserved)
+                if cls_threshold is None:
+                    cls_threshold = getattr(self, "default_cls_threshold", 0.5)
+                keep = cls_probs[b] > float(cls_threshold)
+
+            # Optional additional filter
+            if min_mask_mass is not None:
+                keep = keep & (mask_mass[b] > float(min_mask_mass))
+
+            num_keep = int(keep.sum().detach().cpu())
             gate_pass = True
-            max_cls_prob = cls_probs[b].max().item() if Q > 0 else 0.0
-            num_keep = int((cls_probs[b] > cls_threshold).sum().item()) if Q > 0 else 0
-            max_mask_prob = mask_probs[b].max().item() if Q > 0 else 0.0
+            if presence_threshold is not None:
+                gate_pass = bool((presence_prob[b] > float(presence_threshold)).detach().cpu())
 
-            # any foreground pixels after mask threshold (pre-keep and post-keep)
-            any_fg_pre_keep = bool((mask_probs[b] > mask_threshold).any().item()) if Q > 0 else False
-
-            # gate based directly on forged probability
-            if not gate_pass:
+            if num_keep == 0:
                 outputs.append({
                     "masks": torch.zeros((0, Hm, Wm), dtype=torch.uint8, device=mask_logits.device),
                     "mask_scores": torch.empty(0, device=mask_logits.device),
                     "mask_forgery_scores": torch.empty(0, device=mask_logits.device),
+                    "image_authenticity": image_presence,   # prob forged (presence_prob)
                     # logging / debugging
+                    "presence_prob": image_presence,
                     "gate_pass": gate_pass,
                     "max_cls_prob": max_cls_prob,
-                    "num_keep": num_keep,
+                    "max_qscore": max_qscore,
+                    "num_keep": 0,
                     "max_mask_prob": max_mask_prob,
+                    "mean_mask_mass": mean_mask_mass,
+                    "max_mask_mass": max_mask_mass,
                     "any_fg_pre_keep": any_fg_pre_keep,
                     "any_fg_post_keep": False,
+                    "selection_mode": "topk" if (topk is not None and int(topk) > 0)
+                                    else ("qscore_thr" if qscore_threshold is not None else "cls_thr"),
+                    "mask_threshold": float(mask_threshold),
+                    "qscore_threshold": None if qscore_threshold is None else float(qscore_threshold),
+                    "cls_threshold": None if cls_threshold is None else float(cls_threshold),
+                    "topk": None if topk is None else int(topk),
+                    "min_mask_mass": None if min_mask_mass is None else float(min_mask_mass),
+                    "presence_threshold": None if presence_threshold is None else float(presence_threshold),
                 })
                 continue
 
-            keep = cls_probs[b] > cls_threshold
-            if keep.sum() == 0:
-                outputs.append({
-                    "masks": torch.zeros((0, Hm, Wm), dtype=torch.uint8, device=mask_logits.device),
-                    "mask_scores": torch.empty(0, device=mask_logits.device),
-                    "mask_forgery_scores": torch.empty(0, device=mask_logits.device),
-                    # logging / debugging
-                    "gate_pass": gate_pass,
-                    "max_cls_prob": max_cls_prob,
-                    "num_keep": num_keep,
-                    "max_mask_prob": max_mask_prob,
-                    "any_fg_pre_keep": any_fg_pre_keep,
-                    "any_fg_post_keep": False,
-                })
-                continue
+            # Build kept outputs
+            kept_mask_probs = mask_probs[b, keep]  # [K,H,W]
+            masks_b = (kept_mask_probs > mask_threshold).to(torch.uint8)
 
-            masks_b_bool = (mask_probs[b, keep] > mask_threshold)
-            any_fg_post_keep = bool(masks_b_bool.any().item())
+            scores_b = qscore[b, keep]             # [K] qscore (train-aligned activity)
+            cls_b = cls_probs[b, keep]             # [K] cls prob
 
-            masks_b = masks_b_bool.to(torch.uint8)
-            scores_b = mask_probs[b, keep].flatten(1).mean(-1)
-            cls_b = cls_probs[b, keep]
+            any_fg_post_keep = bool((kept_mask_probs > mask_threshold).any().detach().cpu())
 
             outputs.append({
                 "masks": masks_b,
                 "mask_scores": scores_b,
                 "mask_forgery_scores": cls_b,
+                "image_authenticity": image_presence,  # prob forged (presence_prob)
                 # logging / debugging
+                "presence_prob": image_presence,
                 "gate_pass": gate_pass,
                 "max_cls_prob": max_cls_prob,
+                "max_qscore": max_qscore,
                 "num_keep": num_keep,
                 "max_mask_prob": max_mask_prob,
+                "mean_mask_mass": mean_mask_mass,
+                "max_mask_mass": max_mask_mass,
                 "any_fg_pre_keep": any_fg_pre_keep,
                 "any_fg_post_keep": any_fg_post_keep,
+                "selection_mode": "topk" if (topk is not None and int(topk) > 0)
+                                else ("qscore_thr" if qscore_threshold is not None else "cls_thr"),
+                "mask_threshold": float(mask_threshold),
+                "qscore_threshold": None if qscore_threshold is None else float(qscore_threshold),
+                "cls_threshold": None if cls_threshold is None else float(cls_threshold),
+                "topk": None if topk is None else int(topk),
+                "min_mask_mass": None if min_mask_mass is None else float(min_mask_mass),
+                "presence_threshold": None if presence_threshold is None else float(presence_threshold),
             })
 
         return outputs

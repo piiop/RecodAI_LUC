@@ -1,0 +1,58 @@
+# Global default config for CV + full-train
+
+experiment:
+  name: baseline
+
+model:
+  type: mask2former_v2
+
+  # Transformer
+  num_queries: 15
+  d_model: 256
+  nhead: 8
+  num_decoder_layers: 6
+  dim_feedforward: 2048
+  dropout: 0.1
+  activation: relu
+
+  # Backbone
+  backbone_name: convnext_tiny
+  pretrained_backbone: true
+  backbone_trainable: true
+  fpn_out_channels: 256
+
+  # Inference Thresholds
+  auth_gate_forged_threshold: 0.0
+  default_mask_threshold: 0.0
+  default_cls_threshold: 0.0
+  # Training Thresholds
+  auth_penalty_cls_threshold: 0.5
+  auth_penalty_temperature: 0.1
+
+  # Loss weights
+  loss_weights:
+    mask_bce: 1.0
+    mask_dice: 1.0
+    mask_cls: 1.0
+    img_auth: 1.0
+    auth_penalty: 1.0
+    authenticity_penalty_weight: 5.0  
+
+trainer:
+  # Used by BOTH cv and full-train
+  epochs: 25              # override for full-train via -c or -o
+  batch_size: 4
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+
+  # CV-only
+  n_folds: 3
+  out_dir: experiments/oof_results
+
+  # Full-train-only
+  save_path: weights/full_train/model_full_data_baseline.pth
+
+wandb:
+  project: mask2former-forgery
+  entity: null
+  mode: online

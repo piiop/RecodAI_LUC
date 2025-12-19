@@ -302,10 +302,9 @@ def run_cv(
                 # one-time logits/probs stats
                 if not printed_logit_stats:
                     with torch.no_grad():
-                        mask_logits, class_logits, img_logits = model.forward_logits(images)
+                        mask_logits, class_logits = model.forward_logits(images)
                         mask_probs = mask_logits.sigmoid()
                         class_probs = class_logits.sigmoid()
-                        img_probs = img_logits.sigmoid()
 
                         collapse_logger.debug_event(
                             "debug_probs",
@@ -324,10 +323,10 @@ def run_cv(
                                     "max": class_probs.max().item(),
                                     "frac_gt_0p1": (class_probs > 0.1).float().mean().item(),
                                 },
-                                "img_probs": {"mean": img_probs.mean().item(), "max": img_probs.max().item()},
                             },
                         )
                     printed_logit_stats = True
+
 
                 loss_dict = model(
                     images,
@@ -344,21 +343,23 @@ def run_cv(
                 optimizer.step()
 
                 collapse_logger.log_step_losses(
-                    {
-                        "fold": fold + 1,
-                        "epoch": epoch + 1,
-                        "global_step": global_step,
-                        "lr": optimizer.param_groups[0]["lr"],
-                        "loss_mask_bce": float(loss_dict["loss_mask_bce"].detach().cpu()),
-                        "loss_mask_dice": float(loss_dict["loss_mask_dice"].detach().cpu()),
-                        "loss_mask_cls": float(loss_dict["loss_mask_cls"].detach().cpu()),
-                        "loss_img_auth": float(loss_dict["loss_img_auth"].detach().cpu()),
-                        "loss_auth_penalty": float(loss_dict["loss_auth_penalty"].detach().cpu()),
-                        "loss_total": float(loss_dict["loss_total"].detach().cpu()),
-                        "w_mask_cls": float(getattr(model, "loss_weight_mask_cls", 0.0)),
-                        "w_auth_penalty": float(getattr(model, "loss_weight_auth_penalty", 0.0)),
-                    }
-                )
+                        {
+                            "fold": fold + 1,
+                            "epoch": epoch + 1,
+                            "global_step": global_step,
+                            "lr": optimizer.param_groups[0]["lr"],
+                            "loss_mask_bce": float(loss_dict["loss_mask_bce"].detach().cpu()),
+                            "loss_mask_dice": float(loss_dict["loss_mask_dice"].detach().cpu()),
+                            "loss_mask_cls": float(loss_dict["loss_mask_cls"].detach().cpu()),
+                            "loss_presence": float(loss_dict["loss_presence"].detach().cpu()),
+                            "loss_auth_penalty": float(loss_dict["loss_auth_penalty"].detach().cpu()),
+                            "loss_total": float(loss_dict["loss_total"].detach().cpu()),
+                            "w_mask_cls": float(getattr(model, "loss_weight_mask_cls", 0.0)),
+                            "w_presence": float(getattr(model, "loss_weight_presence", 0.0)),
+                            "w_auth_penalty": float(getattr(model, "loss_weight_auth_penalty", 0.0)),
+                        }
+                    )
+
 
                 running_loss += loss.item() * len(images)
                 global_step += 1
@@ -378,9 +379,8 @@ def run_cv(
             # epoch-end collapse stats (on fixed debug batch)
             model.eval()
             with torch.no_grad():
-                mask_logits, class_logits, img_logits = model.forward_logits(dbg_images)
+                mask_logits, class_logits = model.forward_logits(dbg_images)
                 cls_probs = class_logits.sigmoid()
-                img_probs = img_logits.sigmoid()
                 mask_probs = mask_logits.sigmoid().flatten(2)
 
                 cls_max = cls_probs.max(dim=1).values
@@ -396,7 +396,6 @@ def run_cv(
                         "keep_rate@0.1": (cls_probs > 0.1).float().mean().item(),
                         "keep_rate@0.2": (cls_probs > 0.2).float().mean().item(),
                         "keep_rate@0.3": (cls_probs > 0.3).float().mean().item(),
-                        "img_forged_mean": img_probs.mean().item(),
                         "mask_max_mean": mask_max.mean().item(),
                         "w_mask_cls": float(getattr(model, "loss_weight_mask_cls", 0.0)),
                     }
@@ -409,13 +408,13 @@ def run_cv(
                         "cls/keep@0.2": (cls_probs > 0.2).float().mean().item(),
                         "cls/keep@0.3": (cls_probs > 0.3).float().mean().item(),
                         "mask/max_mean": mask_max.mean().item(),
-                        "img/forged_mean": img_probs.mean().item(),
                     },
                     epoch=epoch + 1,
                     global_step=fold * num_epochs + epoch + 1,
                 )
 
             model.train()
+
 
         # ---- Inference on validation fold (OOF) ----
         model.eval()

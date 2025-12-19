@@ -192,7 +192,6 @@ def hungarian_match(
 def compute_losses(
     mask_logits: torch.Tensor,
     class_logits: torch.Tensor,
-    img_logits: torch.Tensor,  # kept for call-site compatibility; intentionally unused
     targets: List[Dict],
     *,
     cost_bce: float = 1.0,

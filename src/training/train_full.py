@@ -5,8 +5,6 @@ Train a Mask2FormerForgeryModel on the **entire** training set using the
 best hyperparameters discovered via CV.  
 Outputs final weights for Kaggle LB evaluation (stored under weights/full_train/).
 """
-
-import os
 import argparse
 from pathlib import Path
 
@@ -19,7 +17,6 @@ from src.models.mask2former_v2 import Mask2FormerForgeryModel
 from src.utils.seed_logging_utils import setup_seed, log_seed_info
 from src.utils.wandb_utils import (
     init_wandb_run,
-    log_config,
     log_epoch_metrics,
     set_summary,
     log_artifact,
@@ -27,17 +24,6 @@ from src.utils.wandb_utils import (
 )
 from src.utils.config_utils import sanitize_model_kwargs
 from src.utils.cls_collapse_logger import ClsCollapseLogger
-
-def _maybe_float(x, default=0.0):
-    """Safely convert tensor/scalar to float (missing -> default)."""
-    if x is None:
-        return float(default)
-    try:
-        if torch.is_tensor(x):
-            return float(x.detach().cpu())
-        return float(x)
-    except Exception:
-        return float(default)
 
 
 def collect_optimizer_debug(model, optimizer, keywords=("img_head", "class_head", "gate")):
@@ -103,7 +89,7 @@ def run_full_train(
         batch_size=batch_size,
         shuffle=True,
         collate_fn=detection_collate_fn,
-        num_workers=4,          # try 4 first; can test 8 later
+        num_workers=4, 
         pin_memory=True,
         persistent_workers=True,
     )
@@ -201,12 +187,16 @@ def run_full_train(
             # ---- (was one-time logits/probs stats pre-loss) ----
             if not printed_logit_stats:
                 with torch.no_grad():
-                    mask_logits, class_logits, img_logits = model.forward_logits(images)
-                    ml, cl, il = mask_logits, class_logits, img_logits
+                    # NOTE: forward_logits should no longer return img_logits in v2
+                    out = model(images, inference_overrides={"return_raw": True})
+                    ml = out["mask_logits"]
+                    cl = out["class_logits"]
 
-                    mask_probs = ml.sigmoid()
-                    class_probs = cl.sigmoid()
-                    img_probs = il.sigmoid()
+                    mask_probs = out["mask_probs"]
+                    class_probs = out["cls_probs"]
+                    mask_mass = out["mask_mass"]
+                    qscore = out["qscore"]
+                    presence_prob = out["presence_prob"]
 
                     collapse_logger.debug_event(
                         "debug_logits",
@@ -224,12 +214,6 @@ def run_full_train(
                                 "max": cl.max().item(),
                                 "mean": cl.mean().item(),
                                 "std": cl.std().item(),
-                            },
-                            "img_logits": {
-                                "min": il.min().item(),
-                                "max": il.max().item(),
-                                "mean": il.mean().item(),
-                                "std": il.std().item(),
                             },
                         },
                     )
@@ -250,14 +234,25 @@ def run_full_train(
                                 "max": class_probs.max().item(),
                                 "frac_gt_0p1": (class_probs > 0.1).float().mean().item(),
                             },
-                            "img_probs": {
-                                "mean": img_probs.mean().item(),
-                                "max": img_probs.max().item(),
+                            "mask_mass": {
+                                "mean": mask_mass.mean().item(),
+                                "max": mask_mass.max().item(),
+                            },
+                            "qscore": {
+                                "mean": qscore.mean().item(),
+                                "p95": qscore.flatten().quantile(0.95).item(),
+                                "max": qscore.max().item(),
+                            },
+                            "presence_prob": {
+                                "mean": presence_prob.mean().item(),
+                                "min": presence_prob.min().item(),
+                                "max": presence_prob.max().item(),
                             },
                         },
                     )
 
                 printed_logit_stats = True
+
 
             loss_dict = model(
                 images,
@@ -273,10 +268,7 @@ def run_full_train(
             loss.backward()
             optimizer.step()
 
-            # ---- step loss logging (expanded) ----
-            lp_auth = loss_dict.get("loss_presence_auth", None)
-            lf_pres = loss_dict.get("loss_forged_presence", None)
-
+            # ---- step loss logging (aligned with refactored losses) ----
             collapse_logger.log_step_losses(
                 {
                     "epoch": epoch + 1,
@@ -285,23 +277,21 @@ def run_full_train(
                     "loss_mask_bce": float(loss_dict["loss_mask_bce"].detach().cpu()),
                     "loss_mask_dice": float(loss_dict["loss_mask_dice"].detach().cpu()),
                     "loss_mask_cls": float(loss_dict["loss_mask_cls"].detach().cpu()),
-                    "loss_img_auth": float(loss_dict["loss_img_auth"].detach().cpu()),
+                    "loss_presence": float(loss_dict.get("loss_presence", 0.0).detach().cpu())
+                    if torch.is_tensor(loss_dict.get("loss_presence", None))
+                    else float(loss_dict.get("loss_presence", 0.0)),
                     "loss_auth_penalty": float(loss_dict["loss_auth_penalty"].detach().cpu()),
-                    "loss_presence_auth": float(lp_auth.detach().cpu()) if lp_auth is not None else 0.0,
-                    "loss_forged_presence": float(lf_pres.detach().cpu()) if lf_pres is not None else 0.0,
                     "loss_total": float(loss_dict["loss_total"].detach().cpu()),
                     # weights snapshot (helps sweep analysis)
                     "w_mask_bce": float(getattr(model, "loss_weight_mask_bce", 0.0)),
                     "w_mask_dice": float(getattr(model, "loss_weight_mask_dice", 0.0)),
                     "w_mask_cls": float(getattr(model, "loss_weight_mask_cls", 0.0)),
-                    "w_img_auth": float(getattr(model, "loss_weight_img_auth", 0.0)),
+                    "w_presence": float(getattr(model, "loss_weight_presence", 0.0)),
                     "w_auth_penalty": float(getattr(model, "loss_weight_auth_penalty", 0.0)),
-                    "w_presence_auth": float(getattr(model, "loss_weight_presence_auth", 0.0)),
-                    "w_forged_presence": float(getattr(model, "loss_weight_forged_presence", 0.0)),
-                    "forged_presence_tau": float(getattr(model, "forged_presence_tau", 0.0)),
-                    "presence_use_max": int(bool(getattr(model, "presence_use_max", False))),
+                    "authenticity_penalty_weight": float(getattr(model, "authenticity_penalty_weight", 0.0)),
                 }
             )
+
 
             running_loss += loss.item() * len(images)
             global_step += 1
@@ -316,17 +306,19 @@ def run_full_train(
             global_step=epoch + 1,
         )
 
-        # ---- epoch-end collapse detectors (already existed) ----
+        # ---- epoch-end collapse detectors (no img head; use train-aligned qscore/presence) ----
         model.eval()
         with torch.no_grad():
-            mask_logits, class_logits, img_logits = model.forward_logits(debug_images)
+            out = model(debug_images, inference_overrides={"return_raw": True})
 
-            cls_probs = class_logits.sigmoid()
-            img_probs = img_logits.sigmoid()
-            mask_probs = mask_logits.sigmoid().flatten(2)
+            cls_probs = out["cls_probs"]                 # [B,Q]
+            mask_probs_flat = out["mask_probs"].flatten(2)  # [B,Q,HW]
+            qscore = out["qscore"]                       # [B,Q]
+            presence_prob = out["presence_prob"]         # [B]
 
             cls_max = cls_probs.max(dim=1).values
-            mask_max = mask_probs.max(dim=2).values.max(dim=1).values
+            mask_max = mask_probs_flat.max(dim=2).values.max(dim=1).values
+            qscore_max = qscore.max(dim=1).values
 
             collapse_logger.log_epoch_summary(
                 {
@@ -337,13 +329,13 @@ def run_full_train(
                     "keep_rate@0.1": (cls_probs > 0.1).float().mean().item(),
                     "keep_rate@0.2": (cls_probs > 0.2).float().mean().item(),
                     "keep_rate@0.3": (cls_probs > 0.3).float().mean().item(),
-                    "img_forged_mean": img_probs.mean().item(),
                     "mask_max_mean": mask_max.mean().item(),
+                    "qscore_max_mean": qscore_max.mean().item(),
+                    "presence_mean": presence_prob.mean().item(),
                     "w_mask_cls": float(getattr(model, "loss_weight_mask_cls", 0.0)),
                 }
             )
 
-            # ---- wandb epoch debug metrics (mirror CV) ----
             log_epoch_metrics(
                 stage="full/debug",
                 metrics={
@@ -351,11 +343,13 @@ def run_full_train(
                     "cls/keep@0.2": (cls_probs > 0.2).float().mean().item(),
                     "cls/keep@0.3": (cls_probs > 0.3).float().mean().item(),
                     "mask/max_mean": mask_max.mean().item(),
-                    "img/forged_mean": img_probs.mean().item(),
+                    "qscore/max_mean": qscore_max.mean().item(),
+                    "presence/mean": presence_prob.mean().item(),
                 },
                 epoch=epoch + 1,
                 global_step=epoch + 1,
             )
+
 
         model.train()
 
@@ -368,8 +362,6 @@ def run_full_train(
         type="model",
         aliases=["full_train", "latest"],
     )
-
-
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -422,7 +414,6 @@ def parse_args():
 
 
     return parser.parse_args()
-
 
 def main():
     args = parse_args()
