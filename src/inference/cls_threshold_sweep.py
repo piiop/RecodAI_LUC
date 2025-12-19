@@ -74,7 +74,10 @@ def load_model(weights: str, model_cfg: dict, device: torch.device):
     mk = sanitize_model_kwargs(model_cfg)
 
     # Ensure inference gate is disabled (even if config has it)
+        # Remove inference thresholds so we fully control them here
     mk.pop("auth_gate_forged_threshold", None)
+    mk.pop("default_cls_threshold", None)
+    mk.pop("default_mask_threshold", None)
 
     model = Mask2FormerForgeryModel(
         **mk,

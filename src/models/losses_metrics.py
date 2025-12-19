@@ -192,42 +192,44 @@ def hungarian_match(
 def compute_losses(
     mask_logits: torch.Tensor,
     class_logits: torch.Tensor,
-    img_logits: torch.Tensor,
+    img_logits: torch.Tensor,  # kept for call-site compatibility; intentionally unused
     targets: List[Dict],
     *,
     cost_bce: float = 1.0,
     cost_dice: float = 1.0,
+    # (initially) treat all as 1.0; keep args for config compatibility
     loss_weight_mask_bce: float = 1.0,
     loss_weight_mask_dice: float = 1.0,
     loss_weight_mask_cls: float = 1.0,
-    loss_weight_img_auth: float = 1.0,
+    loss_weight_presence: float = 1.0,
     loss_weight_auth_penalty: float = 1.0,
-    authenticity_penalty_weight: float = 5.0,
-    loss_weight_presence_auth: float = 0.5,
-    loss_weight_forged_presence: float = 0.5,
-    # training thresholds
-    forged_presence_tau: float = 0.10,
-    presence_use_max: bool = True,
-    auth_penalty_cls_threshold: float = 0.5,
-    auth_penalty_temperature: float = 0.1,
+    authenticity_penalty_weight: float = 1.0,
     logger=None,
     debug_ctx: Dict | None = None,
 ) -> Dict[str, torch.Tensor]:
     """
-    Compute all training losses.
+    Refactored losses (no image head supervision; no thresholds/temperature in losses).
 
-    - No print spam; optional structured logs via `logger.debug_event(tag, payload)`.
-    - Keeps backward graph for auth penalty (no torch.no_grad).
-    - Uses differentiable gating for cls in auth penalty.
+    Keeps:
+      1) Instance mask loss on matched pairs (Dice + BCE)
+      2) Query classification BCE (matched=1, unmatched=0)
+      3) Presence BCE vs image_label using a differentiable presence_prob
 
-    logger: optional ClsCollapseLogger-like object with .debug_event(...)
-    debug_ctx: optional dict (e.g., {"epoch": 1, "global_step": 123})
+    Suppression:
+      - loss_auth_penalty: penalize detection "mass" on authentic images (no thresholds),
+        implemented as mean over queries of (cls_prob * mask_mass).
+
+    Notes:
+      - img_logits is unused (image head is to be removed elsewhere).
+      - presence_prob is differentiable and uses max over queries (no extra knobs).
     """
     B, Q, Hm, Wm = mask_logits.shape
     device = mask_logits.device
     ctx = {} if debug_ctx is None else dict(debug_ctx)
 
+    # -------------------------
     # Hungarian matching
+    # -------------------------
     indices = hungarian_match(
         mask_logits,
         targets,
@@ -238,7 +240,7 @@ def compute_losses(
     )
 
     # -------------------------
-    # Mask losses (Dice + BCE) on matched pairs
+    # (1) Mask losses (Dice + BCE) on matched pairs
     # -------------------------
     loss_mask_bce = mask_logits.new_zeros(())
     loss_mask_dice = mask_logits.new_zeros(())
@@ -256,8 +258,8 @@ def compute_losses(
             mode="nearest",
         ).squeeze(1)  # [N_gt, Hm, Wm]
 
-        pred_masks = mask_logits[b, pred_ind]   # [M, Hm, Wm]
-        gt_masks = tgt_masks_resized[tgt_ind]   # [M, Hm, Wm]
+        pred_masks = mask_logits[b, pred_ind]        # [M, Hm, Wm]
+        gt_masks = tgt_masks_resized[tgt_ind]        # [M, Hm, Wm]
 
         loss_mask_bce = loss_mask_bce + sigmoid_ce_loss(pred_masks, gt_masks).sum()
         loss_mask_dice = loss_mask_dice + dice_loss(pred_masks, gt_masks).sum()
@@ -267,20 +269,20 @@ def compute_losses(
         loss_mask_bce = loss_mask_bce / num_instances
         loss_mask_dice = loss_mask_dice / num_instances
     else:
-        # keep graph/device consistent
         z = mask_logits.sum() * 0.0
         loss_mask_bce = z
         loss_mask_dice = z
 
     # -------------------------
-    # Mask-level classification BCE:
-    # matched queries -> 1, unmatched -> 0
+    # (2) Query classification BCE (matched=1, unmatched=0)
     # -------------------------
     class_targets = torch.zeros_like(class_logits, device=device)  # [B, Q]
     for b in range(B):
         pred_ind, _ = indices[b]
         if pred_ind.numel() > 0:
             class_targets[b, pred_ind] = 1.0
+
+    loss_mask_cls = F.binary_cross_entropy_with_logits(class_logits, class_targets)
 
     if logger is not None:
         pos = int(class_targets.sum().item())
@@ -297,24 +299,64 @@ def compute_losses(
             },
         )
 
-    loss_mask_cls = F.binary_cross_entropy_with_logits(class_logits, class_targets)
+    # -------------------------
+    # Presence scalar (differentiable) from per-query class+mask
+    #   mask_mass: mean pixel prob per query
+    #   qscore: cls_prob * mask_mass
+    #   presence_prob: max_q qscore
+    # -------------------------
+    img_targets = torch.stack([t["image_label"].float() for t in targets]).to(device)  # [B]
+
+    mask_probs = torch.sigmoid(mask_logits)                      # [B, Q, Hm, Wm]
+    cls_prob = torch.sigmoid(class_logits)                       # [B, Q]
+    mask_mass = mask_probs.flatten(2).mean(-1)                   # [B, Q]
+    qscore = cls_prob * mask_mass                                # [B, Q]
+    presence_prob = qscore.max(dim=1).values                     # [B]
+    presence_prob = presence_prob.clamp(1e-6, 1.0 - 1e-6)
 
     # -------------------------
-    # Image-level authenticity loss
+    # (3) Presence BCE (image supervision) vs image_label
     # -------------------------
-    img_targets = torch.stack([t["image_label"].float() for t in targets]).to(img_logits.device)  # [B]
-    loss_img_auth = F.binary_cross_entropy_with_logits(img_logits, img_targets)
+    loss_presence = F.binary_cross_entropy(presence_prob, img_targets)
 
-    # -------------------------
-    # Differentiable authenticity penalty (ONLY on authentic images)
-    # -------------------------
-    mask_probs = torch.sigmoid(mask_logits)        # [B, Q, Hm, Wm]
-
-    # -------------------------
-    # Debug: mean predicted foreground prob per query (pre any inference filtering)
-    # -------------------------
     if logger is not None:
-        # per-query mean over batch + pixels -> [Q]
+        logger.debug_event(
+            "loss_presence_stats",
+            {
+                **ctx,
+                "presence_mean": float(presence_prob.mean().item()) if B > 0 else 0.0,
+                "presence_min": float(presence_prob.min().item()) if B > 0 else 0.0,
+                "presence_max": float(presence_prob.max().item()) if B > 0 else 0.0,
+                "loss_presence": float(loss_presence.detach().cpu()),
+            },
+        )
+
+    # -------------------------
+    # Authentic suppression (sole suppression term):
+    # penalize detection mass on authentic images
+    # -------------------------
+    authentic_mask = (img_targets == 0.0).to(qscore.dtype)  # [B]
+    per_image_penalty = qscore.mean(dim=1)                  # [B]
+    penalty = (per_image_penalty * authentic_mask).sum() / max(B, 1)
+    loss_auth_penalty = authenticity_penalty_weight * penalty
+
+    if logger is not None:
+        # per-query mean "activity" for debugging
+        qscore_per_query = qscore.mean(dim=0) if B > 0 else qscore.new_zeros((Q,))
+        logger.debug_event(
+            "loss_auth_penalty_stats",
+            {
+                **ctx,
+                "authentic_frac": float(authentic_mask.mean().item()) if B > 0 else 0.0,
+                "per_image_penalty_mean": float(per_image_penalty.mean().item()) if B > 0 else 0.0,
+                "loss_auth_penalty": float(loss_auth_penalty.detach().cpu()),
+                "qscore_per_query_mean": float(qscore_per_query.mean().item()) if Q > 0 else 0.0,
+                "qscore_per_query_p95": float(qscore_per_query.quantile(0.95).item()) if Q > 0 else 0.0,
+                "qscore_per_query_max": float(qscore_per_query.max().item()) if Q > 0 else 0.0,
+            },
+        )
+
+        # keep the old fg-per-query style log, but now on mask_probs directly
         fg_per_query = mask_probs.mean(dim=(0, 2, 3))  # [Q]
         fg_flat = fg_per_query.flatten()
         logger.debug_event(
@@ -328,84 +370,24 @@ def compute_losses(
                 "fg_prob_max": float(fg_flat.max().item()) if fg_flat.numel() else 0.0,
             },
         )
-    mask_mass = mask_probs.flatten(2).mean(-1)     # [B, Q]
 
     # -------------------------
-    # Detection presence coupling
-    # presence_prob ~ "prob at least one query is positive AND has mask mass"
-    # -------------------------
-    cls_prob = torch.sigmoid(class_logits)         # [B, Q]
-    qscore = cls_prob * mask_mass                  # [B, Q]
-
-    if presence_use_max:
-        presence_prob = qscore.max(dim=1).values   # [B]
-    else:
-        # smoother alternative; can be helpful if max is too peaky
-        presence_prob = 1.0 - torch.exp(-qscore.sum(dim=1)).clamp(0.0, 1.0)  # [B]
-
-    presence_prob = presence_prob.clamp(1e-6, 1.0 - 1e-6)
-
-    # Couple presence to image label (both classes)
-    loss_presence_auth = F.binary_cross_entropy(presence_prob, img_targets)
-
-    # Enforce forged images have some detection mass (prevents "all authentic" collapse)
-    forged_mask = (img_targets == 1.0).to(presence_prob.dtype)  # [B]
-    tau = float(forged_presence_tau)
-    # hinge: if forged and presence_prob < tau => penalty
-    per_img_forged = F.relu(tau - presence_prob) * forged_mask
-    # normalize by batch size (stable even if no forged in batch)
-    loss_forged_presence = per_img_forged.sum() / max(B, 1)
-
-    if logger is not None:
-        logger.debug_event(
-            "loss_presence_stats",
-            {
-                **ctx,
-                "presence_mean": float(presence_prob.mean().item()) if B > 0 else 0.0,
-                "presence_min": float(presence_prob.min().item()) if B > 0 else 0.0,
-                "presence_max": float(presence_prob.max().item()) if B > 0 else 0.0,
-                "tau": tau,
-                "loss_presence_auth": float(loss_presence_auth.detach().cpu()),
-                "loss_forged_presence": float(loss_forged_presence.detach().cpu()),
-            },
-        )
-
-    # Penalize mask mass directly on authentic images (no cls gating)
-    per_image_penalty = mask_mass.mean(dim=1)  # [B]
-    authentic_mask = (img_targets == 0.0).to(per_image_penalty.dtype)  # [B]
-    penalty = (per_image_penalty * authentic_mask).sum() / max(B, 1)
-    loss_auth_penalty = authenticity_penalty_weight * penalty
-
-    if logger is not None:
-        logger.debug_event(
-            "loss_auth_penalty_stats",
-            {
-                **ctx,
-                "authentic_frac": float(authentic_mask.mean().item()) if B > 0 else 0.0,
-                "per_image_penalty_mean": float(per_image_penalty.mean().item()) if B > 0 else 0.0,
-                "loss_auth_penalty": float(loss_auth_penalty.detach().cpu()),
-            },
-        )
-    # -------------------------
-    # Weighted total loss
+    # Total (start with all weights = 1)
     # -------------------------
     loss_total = (
         loss_weight_mask_bce * loss_mask_bce
         + loss_weight_mask_dice * loss_mask_dice
         + loss_weight_mask_cls * loss_mask_cls
-        + loss_weight_img_auth * loss_img_auth
+        + loss_weight_presence * loss_presence
         + loss_weight_auth_penalty * loss_auth_penalty
-        + loss_weight_presence_auth * loss_presence_auth
-        + loss_weight_forged_presence * loss_forged_presence        
     )
 
     return {
         "loss_mask_bce": loss_mask_bce,
         "loss_mask_dice": loss_mask_dice,
         "loss_mask_cls": loss_mask_cls,
-        "loss_img_auth": loss_img_auth,
+        "loss_presence": loss_presence,
         "loss_auth_penalty": loss_auth_penalty,
-        "loss_presence_auth": loss_presence_auth,
-        "loss_forged_presence": loss_forged_presence,        
+        "presence_prob": presence_prob.detach(),  # handy for debugging (not used for backprop)
         "loss_total": loss_total,
     }

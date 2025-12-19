@@ -284,13 +284,11 @@ def get_default_model_cfg():
         auth_gate_forged_threshold=0.5,
         default_mask_threshold=0.5,
         default_cls_threshold=0.5,
-        auth_penalty_cls_threshold=None,
         cost_bce=1.0,
         cost_dice=1.0,
         loss_weight_mask_bce=1.0,
         loss_weight_mask_dice=1.0,
         loss_weight_mask_cls=1.0,
-        loss_weight_img_auth=1.0,
         loss_weight_auth_penalty=1.0,
     )
 
