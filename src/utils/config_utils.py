@@ -302,16 +302,11 @@ def build_model_cfg(user_cfg: dict | None):
 def sanitize_model_kwargs(model_cfg: dict) -> dict:
     cfg = dict(model_cfg)
 
-    # drop non-ctor keys
+    # drop non-ctor / meta keys
     cfg.pop("type", None)
+    cfg.pop("loss_weights", None)
 
-    # flatten loss_weights -> loss_weight_*
-    lw = cfg.pop("loss_weights", None) or {}
-    if lw:
-        cfg["loss_weight_mask_bce"] = lw.get("mask_bce", cfg.get("loss_weight_mask_bce", 1.0))
-        cfg["loss_weight_mask_dice"] = lw.get("mask_dice", cfg.get("loss_weight_mask_dice", 1.0))
-        cfg["loss_weight_mask_cls"] = lw.get("mask_cls", cfg.get("loss_weight_mask_cls", 1.0))
-        cfg["loss_weight_img_auth"] = lw.get("img_auth", cfg.get("loss_weight_img_auth", 1.0))
-        cfg["loss_weight_auth_penalty"] = lw.get("auth_penalty", cfg.get("loss_weight_auth_penalty", 1.0))
+    # drop unset knobs so they don't leak into ctor
+    cfg = {k: v for k, v in cfg.items() if v is not None}
 
     return cfg

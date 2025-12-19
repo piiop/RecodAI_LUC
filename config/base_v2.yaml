@@ -1,7 +1,7 @@
-# Global default config for CV + full-train
+# Global default config for CV + full-train (aligned to v2 loss architecture)
 
 experiment:
-  name: baseline
+  name: base_newloss
 
 model:
   type: mask2former_v2
@@ -14,33 +14,42 @@ model:
   dim_feedforward: 2048
   dropout: 0.1
   activation: relu
+  mask_dim: 256
 
-  # Backbone
+  # Backbone + FPN
   backbone_name: convnext_tiny
   pretrained_backbone: true
   backbone_trainable: true
   fpn_out_channels: 256
 
-  # Inference Thresholds
-  auth_gate_forged_threshold: 0.0
-  default_mask_threshold: 0.0
-  default_cls_threshold: 0.0
-  # Training Thresholds
-  auth_penalty_cls_threshold: 0.5
-  auth_penalty_temperature: 0.1
+  # Hungarian matching costs
+  cost_bce: 1.0
+  cost_dice: 1.0
 
-  # Loss weights
-  loss_weights:
-    mask_bce: 1.0
-    mask_dice: 1.0
-    mask_cls: 1.0
-    img_auth: 1.0
-    auth_penalty: 1.0
-    authenticity_penalty_weight: 5.0  
+  # Loss weights (new architecture)
+  # 1) matched mask loss = BCE + Dice
+  # 2) query cls BCE (matched=1, unmatched=0)
+  # 3) presence BCE vs image_label
+  # 4) authentic suppression penalty (qscore mean on authentic)
+  loss_weight_mask_bce: 1.0
+  loss_weight_mask_dice: 1.0
+  loss_weight_mask_cls: 1.0
+  loss_weight_presence: 1.0
+  loss_weight_auth_penalty: 1.0
+
+  # Scales the suppression term on authentic images
+  authenticity_penalty_weight: 1.0
+
+  # Inference defaults (train-aligned; optional post-filtering)
+  default_mask_threshold: 0.5
+  default_qscore_threshold: null
+  default_topk: null
+  default_min_mask_mass: null
+  default_presence_threshold: null
 
 trainer:
-  # Used by BOTH cv and full-train
-  epochs: 25              # override for full-train via -c or -o
+  name: baseline
+  epochs: 20
   batch_size: 4
   lr: 1.0e-4
   weight_decay: 1.0e-4
