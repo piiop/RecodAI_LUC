@@ -187,9 +187,7 @@ class MSDeformAttnEncoderLayer(nn.Module):
 class MSDeformAttnEncoder(nn.Module):
     def __init__(self, layer, num_layers):
         super().__init__()
-        self.layers = nn.ModuleList([layer if i == 0 else type(layer)(**layer.__dict__["_modules"] == {} and {}) for i in range(num_layers)])
-        # NOTE: above line is brittle; we’ll use deepcopy instead:
-        self.layers = nn.ModuleList([torch.nn.modules.module.deepcopy(layer) for _ in range(num_layers)])
+        self.layers = nn.ModuleList([copy.deepcopy(layer) for _ in range(num_layers)])
 
     def forward(self, src, pos, spatial_shapes, level_start_index, reference_points):
         out = src
@@ -590,144 +588,156 @@ class PositionEmbeddingSine(nn.Module):
         pos = pos.permute(2, 0, 1).unsqueeze(0).expand(B, -1, -1, -1)  # [B, C, H, W]
         return pos
 
-def __init__(
-    self,
-    num_queries=15,
-    d_model=256,
-    nhead=8,
-    num_decoder_layers=6,
-    mask_dim=256,
-    dim_feedforward=2048,
-    dropout=0.1,
-    activation="relu",
-    backbone_name="convnext_tiny",
-    pretrained_backbone=True,
-    backbone_trainable=True,
-    fpn_out_channels=256,
-    # inference thresholds
-    default_mask_threshold=0.0,
-    default_cls_threshold=0.0,  # legacy (kept for backwards compat in inference)
-    # train-aligned inference knobs
-    default_qscore_threshold=None,
-    default_topk=None,
-    default_min_mask_mass=None,
-    default_presence_threshold=None,
-    # matching weights
-    cost_bce=1.0,
-    cost_dice=1.0,
-    cost_qscore=0.0,
-    # loss weights (for convenience total loss)
-    authenticity_penalty_weight=5.0,
-    loss_weight_mask_bce=1.0,
-    loss_weight_mask_dice=1.0,
-    loss_weight_mask_cls=1.0,
-    loss_weight_presence=1.0,
-    loss_weight_auth_penalty=1.0,
-    # sparsity / regularization
-    few_queries_lambda=0.10,
-    presence_lse_beta=10.0,
-    # class BCE balancing / discourage extras
-    cls_neg_pos_ratio=8,
-    cls_neg_weight=0.25,
-    cls_unmatched_multiplier=2.0,
-    # logging
-    sparsity_thresholds=(0.05, 0.10, 0.20),
-):
-    super().__init__()
+class Mask2FormerForgeryModel(nn.Module):
+    """
+    Instance-Seg Transformer (Mask2Former-style) + Authenticity Gate baseline.
+    """
 
-    # -----------------------------
-    # Core config
-    # -----------------------------
-    self.num_queries = num_queries
-    self.d_model = d_model
-    self.mask_dim = mask_dim
-    self.authenticity_penalty_weight = authenticity_penalty_weight
+    @staticmethod
+    def _coerce_thresh(name, value, default=0.5):
+        if value is None:
+            print(f"[Warning] `{name}` was None — coercing to default={default}.")
+            return default
+        return value
 
-    # -----------------------------
-    # Thresholds / inference knobs
-    # -----------------------------
-    self.default_mask_threshold = default_mask_threshold
-    self.default_cls_threshold = self._coerce_thresh(
-        "default_cls_threshold", default_cls_threshold
-    )
-    self.default_qscore_threshold = default_qscore_threshold
-    self.default_topk = default_topk
-    self.default_min_mask_mass = default_min_mask_mass
-    self.default_presence_threshold = default_presence_threshold
+    def __init__(
+        self,
+        num_queries=15,
+        d_model=256,
+        nhead=8,
+        num_decoder_layers=6,
+        mask_dim=256,
+        dim_feedforward=2048,
+        dropout=0.1,
+        activation="relu",
+        backbone_name="convnext_tiny",
+        pretrained_backbone=True,
+        backbone_trainable=True,
+        fpn_out_channels=256,
+        # inference thresholds
+        default_mask_threshold=0.0,
+        default_cls_threshold=0.0,  # legacy (kept for backwards compat in inference)
+        # train-aligned inference knobs
+        default_qscore_threshold=None,
+        default_topk=None,
+        default_min_mask_mass=None,
+        default_presence_threshold=None,
+        # matching weights
+        cost_bce=1.0,
+        cost_dice=1.0,
+        cost_qscore=0.0,
+        # loss weights (for convenience total loss)
+        authenticity_penalty_weight=5.0,
+        loss_weight_mask_bce=1.0,
+        loss_weight_mask_dice=1.0,
+        loss_weight_mask_cls=1.0,
+        loss_weight_presence=1.0,
+        loss_weight_auth_penalty=1.0,
+        # sparsity / regularization
+        few_queries_lambda=0.10,
+        presence_lse_beta=10.0,
+        # class BCE balancing / discourage extras
+        cls_neg_pos_ratio=8,
+        cls_neg_weight=0.25,
+        cls_unmatched_multiplier=2.0,
+        # logging
+        sparsity_thresholds=(0.05, 0.10, 0.20),
+    ):
+        super().__init__()
 
-    # -----------------------------
-    # Matching weights
-    # -----------------------------
-    self.cost_bce = cost_bce
-    self.cost_dice = cost_dice
-    self.cost_qscore = cost_qscore
+        # -----------------------------
+        # Core config
+        # -----------------------------
+        self.num_queries = num_queries
+        self.d_model = d_model
+        self.mask_dim = mask_dim
+        self.authenticity_penalty_weight = authenticity_penalty_weight
 
-    # -----------------------------
-    # Loss weights
-    # -----------------------------
-    self.loss_weight_mask_bce = loss_weight_mask_bce
-    self.loss_weight_mask_dice = loss_weight_mask_dice
-    self.loss_weight_mask_cls = loss_weight_mask_cls
-    self.loss_weight_presence = loss_weight_presence
-    self.loss_weight_auth_penalty = loss_weight_auth_penalty
+        # -----------------------------
+        # Thresholds / inference knobs
+        # -----------------------------
+        self.default_mask_threshold = default_mask_threshold
+        self.default_cls_threshold = self._coerce_thresh(
+            "default_cls_threshold", default_cls_threshold
+        )
+        self.default_qscore_threshold = default_qscore_threshold
+        self.default_topk = default_topk
+        self.default_min_mask_mass = default_min_mask_mass
+        self.default_presence_threshold = default_presence_threshold
 
-    # -----------------------------
-    # Sparsity / regularization knobs
-    # -----------------------------
-    self.few_queries_lambda = few_queries_lambda
-    self.presence_lse_beta = presence_lse_beta
-    self.cls_neg_pos_ratio = cls_neg_pos_ratio
-    self.cls_neg_weight = cls_neg_weight
-    self.cls_unmatched_multiplier = cls_unmatched_multiplier
-    self.sparsity_thresholds = sparsity_thresholds
+        # -----------------------------
+        # Matching weights
+        # -----------------------------
+        self.cost_bce = cost_bce
+        self.cost_dice = cost_dice
+        self.cost_qscore = cost_qscore
 
-    # -----------------------------
-    # Backbone + FPN
-    # -----------------------------
-    self.backbone = ConvNeXtFPNBackbone(
-        backbone_name=backbone_name,
-        pretrained=pretrained_backbone,
-        fpn_out_channels=fpn_out_channels,
-        train_backbone=backbone_trainable,
-    )
+        # -----------------------------
+        # Loss weights
+        # -----------------------------
+        self.loss_weight_mask_bce = loss_weight_mask_bce
+        self.loss_weight_mask_dice = loss_weight_mask_dice
+        self.loss_weight_mask_cls = loss_weight_mask_cls
+        self.loss_weight_presence = loss_weight_presence
+        self.loss_weight_auth_penalty = loss_weight_auth_penalty
 
-    # -----------------------------
-    # Transformer decoder + positional enc
-    # -----------------------------
-    self.position_encoding = PositionEmbeddingSine(
-        fpn_out_channels // 2, normalize=True
-    )
-    self.transformer_decoder = SimpleTransformerDecoder(
-        d_model=d_model,
-        nhead=nhead,
-        num_layers=num_decoder_layers,
-        dim_feedforward=dim_feedforward,
-        dropout=dropout,
-        activation=activation,
-        num_queries=num_queries,
-        return_intermediate=True,
-    )
+        # -----------------------------
+        # Sparsity / regularization knobs
+        # -----------------------------
+        self.few_queries_lambda = few_queries_lambda
+        self.presence_lse_beta = presence_lse_beta
+        self.cls_neg_pos_ratio = cls_neg_pos_ratio
+        self.cls_neg_weight = cls_neg_weight
+        self.cls_unmatched_multiplier = cls_unmatched_multiplier
+        self.sparsity_thresholds = sparsity_thresholds
 
-    # -----------------------------
-    # Pixel decoder / mask feature projection
-    # -----------------------------
-    self.pixel_decoder = Mask2FormerPixelDecoder(
-        in_channels=fpn_out_channels,   # 256 from your FPN
-        conv_dim=d_model,               # 256
-        mask_dim=mask_dim,              # 256
-        n_levels=3,                     # use P3,P4,P5 for deform encoder
-        n_heads=nhead,
-        n_points=4,
-        enc_layers=6,                   # typical
-        dim_feedforward=1024,
-        dropout=dropout,
-    )
+        # -----------------------------
+        # Backbone + FPN
+        # -----------------------------
+        self.backbone = ConvNeXtFPNBackbone(
+            backbone_name=backbone_name,
+            pretrained=pretrained_backbone,
+            fpn_out_channels=fpn_out_channels,
+            train_backbone=backbone_trainable,
+        )
 
-    # -----------------------------
-    # Instance heads
-    # -----------------------------
-    self.class_head = nn.Linear(d_model, 1)  # forgery vs ignore, per query
-    self.mask_embed_head = nn.Linear(d_model, mask_dim)
+        # -----------------------------
+        # Transformer decoder + positional enc
+        # -----------------------------
+        self.position_encoding = PositionEmbeddingSine(
+            fpn_out_channels // 2, normalize=True
+        )
+        self.transformer_decoder = SimpleTransformerDecoder(
+            d_model=d_model,
+            nhead=nhead,
+            num_layers=num_decoder_layers,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            activation=activation,
+            num_queries=num_queries,
+            return_intermediate=True,
+        )
+
+        # -----------------------------
+        # Pixel decoder / mask feature projection
+        # -----------------------------
+        self.pixel_decoder = Mask2FormerPixelDecoder(
+            in_channels=fpn_out_channels,   # 256 from your FPN
+            conv_dim=d_model,               # 256
+            mask_dim=mask_dim,              # 256
+            n_levels=3,                     # use P3,P4,P5 for deform encoder
+            n_heads=nhead,
+            n_points=4,
+            enc_layers=6,                   # typical
+            dim_feedforward=1024,
+            dropout=dropout,
+        )
+
+        # -----------------------------
+        # Instance heads
+        # -----------------------------
+        self.class_head = nn.Linear(d_model, 1)  # forgery vs ignore, per query
+        self.mask_embed_head = nn.Linear(d_model, mask_dim)
 
 
     def forward(self, images, targets=None, inference_overrides=None):
