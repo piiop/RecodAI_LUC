@@ -328,37 +328,47 @@ def run_cv(
                     printed_logit_stats = True
 
 
+                # --- inside the training step, when calling model(...) ---
                 loss_dict = model(
                     images,
                     targets,
                     inference_overrides={
                         "logger": collapse_logger,
                         "debug_ctx": {"fold": fold + 1, "epoch": epoch + 1, "global_step": global_step},
+                        # ensure train-time survival is explicitly aligned with your defaults
+                        "topk": getattr(model, "default_topk", None),
+                        "min_mask_mass": getattr(model, "default_min_mask_mass", None),
                     },
                 )
                 loss = loss_dict["loss_total"]
+
 
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
 
                 collapse_logger.log_step_losses(
-                        {
-                            "fold": fold + 1,
-                            "epoch": epoch + 1,
-                            "global_step": global_step,
-                            "lr": optimizer.param_groups[0]["lr"],
-                            "loss_mask_bce": float(loss_dict["loss_mask_bce"].detach().cpu()),
-                            "loss_mask_dice": float(loss_dict["loss_mask_dice"].detach().cpu()),
-                            "loss_mask_cls": float(loss_dict["loss_mask_cls"].detach().cpu()),
-                            "loss_presence": float(loss_dict["loss_presence"].detach().cpu()),
-                            "loss_auth_penalty": float(loss_dict["loss_auth_penalty"].detach().cpu()),
-                            "loss_total": float(loss_dict["loss_total"].detach().cpu()),
-                            "w_mask_cls": float(getattr(model, "loss_weight_mask_cls", 0.0)),
-                            "w_presence": float(getattr(model, "loss_weight_presence", 0.0)),
-                            "w_auth_penalty": float(getattr(model, "loss_weight_auth_penalty", 0.0)),
-                        }
-                    )
+                    {
+                        "fold": fold + 1,
+                        "epoch": epoch + 1,
+                        "global_step": global_step,
+                        "lr": optimizer.param_groups[0]["lr"],
+                        "loss_mask_bce": float(loss_dict["loss_mask_bce"].detach().cpu()),
+                        "loss_mask_dice": float(loss_dict["loss_mask_dice"].detach().cpu()),
+                        "loss_mask_cls": float(loss_dict["loss_mask_cls"].detach().cpu()),
+                        "loss_presence": float(loss_dict["loss_presence"].detach().cpu()),
+                        "loss_auth_penalty": float(loss_dict["loss_auth_penalty"].detach().cpu()),
+                        "loss_total": float(loss_dict["loss_total"].detach().cpu()),
+                        "w_mask_cls": float(getattr(model, "loss_weight_mask_cls", 0.0)),
+                        "w_presence": float(getattr(model, "loss_weight_presence", 0.0)),
+                        "w_auth_penalty": float(getattr(model, "loss_weight_auth_penalty", 0.0)),
+                        # new sparsity knobs (so logs show what regime you trained)
+                        "train_topk": int(getattr(model, "default_topk", -1) or -1),
+                        "train_min_mask_mass": float(getattr(model, "default_min_mask_mass", 0.0) or 0.0),
+                        "few_queries_lambda": float(getattr(model, "few_queries_lambda", 0.0)),
+                        "presence_lse_beta": float(getattr(model, "presence_lse_beta", 0.0)),
+                    }
+                )
 
 
                 running_loss += loss.item() * len(images)
@@ -376,37 +386,49 @@ def run_cv(
                 global_step=fold * num_epochs + epoch + 1,
             )
 
-            # epoch-end collapse stats (on fixed debug batch)
             model.eval()
             with torch.no_grad():
                 mask_logits, class_logits = model.forward_logits(dbg_images)
                 cls_probs = class_logits.sigmoid()
-                mask_probs = mask_logits.sigmoid().flatten(2)
+                mask_probs = mask_logits.sigmoid()
+                mask_mass = mask_probs.flatten(2).mean(-1)         # [B,Q]
+                qscore = cls_probs * mask_mass                      # [B,Q]
 
-                cls_max = cls_probs.max(dim=1).values
-                mask_max = mask_probs.max(dim=2).values.max(dim=1).values
+                q_max = qscore.max(dim=1).values
+                q_sum = qscore.sum(dim=1).clamp_min(1e-12)
+                q_ratio = (q_max / q_sum)
+
+                mask_max = mask_probs.flatten(2).max(dim=2).values.max(dim=1).values
+                mm_max = mask_mass.max(dim=1).values
 
                 collapse_logger.log_epoch_summary(
                     {
                         "fold": fold + 1,
                         "epoch": epoch + 1,
                         "epoch_loss": float(train_epoch_loss),
-                        "cls_max_mean": cls_max.mean().item(),
-                        "cls_max_p95": cls_max.quantile(0.95).item(),
-                        "keep_rate@0.1": (cls_probs > 0.1).float().mean().item(),
-                        "keep_rate@0.2": (cls_probs > 0.2).float().mean().item(),
-                        "keep_rate@0.3": (cls_probs > 0.3).float().mean().item(),
+                        # qscore-focused sparsity signals
+                        "qscore_max_mean": q_max.mean().item(),
+                        "qscore_max_p95": q_max.quantile(0.95).item(),
+                        "qscore_max_over_sum_mean": q_ratio.mean().item(),
+                        "num_qscore_gt_0.05": (qscore > 0.05).float().sum(dim=1).mean().item(),
+                        "num_qscore_gt_0.10": (qscore > 0.10).float().sum(dim=1).mean().item(),
+                        "num_qscore_gt_0.20": (qscore > 0.20).float().sum(dim=1).mean().item(),
+                        "mask_mass_max_mean": mm_max.mean().item(),
                         "mask_max_mean": mask_max.mean().item(),
+                        # weights / knobs
                         "w_mask_cls": float(getattr(model, "loss_weight_mask_cls", 0.0)),
+                        "w_presence": float(getattr(model, "loss_weight_presence", 0.0)),
+                        "few_queries_lambda": float(getattr(model, "few_queries_lambda", 0.0)),
                     }
                 )
 
                 log_epoch_metrics(
                     stage=f"fold{fold + 1}/debug",
                     metrics={
-                        "cls/max_mean": cls_max.mean().item(),
-                        "cls/keep@0.2": (cls_probs > 0.2).float().mean().item(),
-                        "cls/keep@0.3": (cls_probs > 0.3).float().mean().item(),
+                        "qscore/max_mean": q_max.mean().item(),
+                        "qscore/max_over_sum_mean": q_ratio.mean().item(),
+                        "qscore/num_gt_0.10": (qscore > 0.10).float().sum(dim=1).mean().item(),
+                        "mask_mass/max_mean": mm_max.mean().item(),
                         "mask/max_mean": mask_max.mean().item(),
                     },
                     epoch=epoch + 1,

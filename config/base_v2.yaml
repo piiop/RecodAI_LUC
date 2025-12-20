@@ -1,36 +1,17 @@
 # Global default config for CV + full-train (aligned to v2 loss architecture)
 
 experiment:
-  name: base_newloss
+  name: base_loss_v3
 
 model:
   type: mask2former_v2
 
-  # Transformer
-  num_queries: 15
-  d_model: 256
-  nhead: 8
-  num_decoder_layers: 6
-  dim_feedforward: 2048
-  dropout: 0.1
-  activation: relu
-  mask_dim: 256
-
-  # Backbone + FPN
-  backbone_name: convnext_tiny
-  pretrained_backbone: true
-  backbone_trainable: true
-  fpn_out_channels: 256
-
   # Hungarian matching costs
   cost_bce: 1.0
   cost_dice: 1.0
+  cost_qscore: 0.0   # optional: bias matching toward high-qscore queries
 
   # Loss weights (new architecture)
-  # 1) matched mask loss = BCE + Dice
-  # 2) query cls BCE (matched=1, unmatched=0)
-  # 3) presence BCE vs image_label
-  # 4) authentic suppression penalty (qscore mean on authentic)
   loss_weight_mask_bce: 1.0
   loss_weight_mask_dice: 1.0
   loss_weight_mask_cls: 1.0
@@ -40,11 +21,24 @@ model:
   # Scales the suppression term on authentic images
   authenticity_penalty_weight: 1.0
 
+  # Sparsity / regularization (train-time)
+  few_queries_lambda: 0.10
+  presence_lse_beta: 10.0
+
+  # Class BCE balancing / discourage extras
+  cls_neg_pos_ratio: 8
+  cls_neg_weight: 0.25
+  cls_unmatched_multiplier: 2.0
+
+  # Logging thresholds for sparsity diagnostics
+  sparsity_thresholds: [0.05, 0.10, 0.20]
+
   # Inference defaults (train-aligned; optional post-filtering)
   default_mask_threshold: 0.5
+  default_cls_threshold: 0.0          # legacy; kept for compatibility
   default_qscore_threshold: null
-  default_topk: null
-  default_min_mask_mass: null
+  default_topk: 2
+  default_min_mask_mass: 0.001
   default_presence_threshold: null
 
 trainer:

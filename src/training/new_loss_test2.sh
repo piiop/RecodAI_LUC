@@ -4,52 +4,47 @@ set -euo pipefail
 CFG=base_v2.yaml
 EPOCHS=5
 
-# bash src/training/new_loss_test2s.sh
+# bash src/training/new_loss_test2.sh
 
-# Why these 5:
-# (A) Your results show the *only* non-degenerate improvements came from "conservative instance selection"
-#     (topk/min_mass). So we bias runs toward: fewer queries + fewer tiny masks.
-# (B) Presence gating looked brittle (fold flipping). We test it only in “soft” combos where it
-#     suppresses obvious garbage without forcing all-auth collapse.
-# (C) We include 1 "pretty good" conservative baseline + 4 “extreme-ish” variants around it.
+#!/usr/bin/env bash
+set -euo pipefail
 
-# 1) "Pretty good" conservative baseline:
-#    topk=1 (strong prior: single best query) + tiny min_mass to drop speckle.
-python -m src.cli cv -c $CFG \
-  -o trainer.name=mini_topk1_minmass_0p001 \
-  -o trainer.epochs=$EPOCHS \
-  -o model.default_topk=1 \
-  -o model.default_min_mask_mass=0.001
+CFG="${CFG:-base_v2.yaml}"
+EPOCHS="${EPOCHS:-5}"
 
-# 2) Extreme: topk=1 + stricter min_mass to force only chunky masks through.
-#    Tests if your partial gains were coming from removing micro-FPs.
-python -m src.cli cv -c $CFG \
-  -o trainer.name=mini_topk1_minmass_0p003 \
-  -o trainer.epochs=$EPOCHS \
-  -o model.default_topk=1 \
-  -o model.default_min_mask_mass=0.003
+# Notes (training knobs in current code):
+# - compute_losses supports: loss_weight_mask_{bce,dice,cls}, loss_weight_presence,
+#   loss_weight_auth_penalty, authenticity_penalty_weight :contentReference[oaicite:0]{index=0}
+# - model exposes authenticity_penalty_weight and loss_weight_auth_penalty (and other ctor cfg) :contentReference[oaicite:1]{index=1}
+# - src.cli forwards -o dotted overrides into model kwargs :contentReference[oaicite:2]{index=2}
 
-# 3) Extreme: topk=2 (allow 2 instances) + min_mass=0.002.
-#    Checks whether some folds truly need 2 instances, while still filtering speckle.
-python -m src.cli cv -c $CFG \
-  -o trainer.name=mini_topk2_minmass_0p002 \
-  -o trainer.epochs=$EPOCHS \
-  -o model.default_topk=2 \
-  -o model.default_min_mask_mass=0.002
+# 1) Baseline (new loss system) — just name it clearly
+python -m src.cli cv -c "$CFG" \
+  -o trainer.name=mini_lossv2_baseline \
+  -o trainer.epochs="$EPOCHS"
 
-# 4) Extreme: qscore threshold only (no topk), tuned low-ish to avoid all-auth.
-#    Tests whether "absolute activity" selection beats fixed instance count.
-python -m src.cli cv -c $CFG \
-  -o trainer.name=mini_qscore_0p15_minmass_0p002 \
-  -o trainer.epochs=$EPOCHS \
-  -o model.default_qscore_threshold=0.15 \
-  -o model.default_min_mask_mass=0.002
+# 2) Much stronger authentic suppression (forces sparsity by punishing any activity on authentic)
+python -m src.cli cv -c "$CFG" \
+  -o trainer.name=mini_lossv2_authpen_strong20 \
+  -o trainer.epochs="$EPOCHS" \
+  -o model.authenticity_penalty_weight=20.0
 
-# 5) Extreme: soft presence gate + topk=1.
-#    Goal: suppress obvious authentic FPs without hard-collapsing to all-auth.
-#    (Presence=0.45 is intentionally near the observed brittle region, but less harsh than 0.5.)
-python -m src.cli cv -c $CFG \
-  -o trainer.name=mini_presence_0p45_topk1 \
-  -o trainer.epochs=$EPOCHS \
-  -o model.default_presence_threshold=0.45 \
-  -o model.default_topk=1
+# 3) Weak authentic suppression (should allow activity; useful to confirm penalty is actually doing something)
+python -m src.cli cv -c "$CFG" \
+  -o trainer.name=mini_lossv2_authpen_weak1 \
+  -o trainer.epochs="$EPOCHS" \
+  -o model.authenticity_penalty_weight=1.0
+
+# 4) Push “how many instances” harder (sparser queries via stronger query-classification pressure)
+python -m src.cli cv -c "$CFG" \
+  -o trainer.name=mini_lossv2_cls_up2 \
+  -o trainer.epochs="$EPOCHS" \
+  -o model.loss_weight_mask_cls=2.0
+
+# 5) Reduce query capacity (fewer queries => easier to concentrate signal + less noise)
+python -m src.cli cv -c "$CFG" \
+  -o trainer.name=mini_lossv2_numq8_authpen10 \
+  -o trainer.epochs="$EPOCHS" \
+  -o model.num_queries=8 \
+  -o model.authenticity_penalty_weight=10.0
+
