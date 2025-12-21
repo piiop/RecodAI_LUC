@@ -239,7 +239,6 @@ def compute_losses(
     *,
     cost_bce: float = 1.0,
     cost_dice: float = 1.0,
-    # (initially) treat all as 1.0; keep args for config compatibility
     loss_weight_mask_bce: float = 1.0,
     loss_weight_mask_dice: float = 1.0,
     loss_weight_mask_cls: float = 1.0,
@@ -260,6 +259,7 @@ def compute_losses(
     few_queries_lambda: float = 0.10,    # λ * qscore.sum(dim=1).mean()
     # --- presence smoothing ---
     presence_lse_beta: float = 10.0,     # smooth-max in logit(qscore) space
+    tv_lambda: float = 0.0,
     # --- logging ---
     sparsity_thresholds: Tuple[float, ...] = (0.05, 0.10, 0.20),
     logger=None,
@@ -478,6 +478,41 @@ def compute_losses(
 
     presence_prob = presence_prob.clamp(1e-6, 1.0 - 1e-6)
 
+        # -------------------------
+    # NEW: TV / boundary smoothness penalty
+    #   - computed on mask_probs (sigmoid(mask_logits))
+    #   - only on allowed/surviving queries
+    #   - only on forged images (image_label==1)
+    # -------------------------
+    loss_tv = mask_logits.new_zeros(())
+    if tv_lambda is not None and float(tv_lambda) > 0.0:
+        tv_sum = mask_logits.new_zeros(())
+        tv_count = 0
+
+        for b in range(B):
+            if float(img_targets[b].item()) < 0.5:
+                continue  # forged-only
+            keep = allowed_queries[b]
+            if keep is None or int(keep.sum().item()) == 0:
+                continue
+
+            p = mask_probs[b, keep]  # [K,H,W]
+            if p.numel() == 0:
+                continue
+
+            # anisotropic TV (L1) averaged over pixels and queries
+            tv_h = (p[:, :, 1:] - p[:, :, :-1]).abs().mean()
+            tv_v = (p[:, 1:, :] - p[:, :-1, :]).abs().mean()
+            tv = tv_h + tv_v
+
+            tv_sum = tv_sum + tv
+            tv_count += 1
+
+        if tv_count > 0:
+            loss_tv = tv_sum / tv_count
+        else:
+            loss_tv = mask_logits.sum() * 0.0
+
     # -------------------------
     # (3) Presence BCE (image supervision) vs image_label
     # -------------------------
@@ -586,6 +621,7 @@ def compute_losses(
         + loss_weight_presence * loss_presence
         + loss_weight_auth_penalty * loss_auth_penalty
         + float(few_queries_lambda) * loss_few_queries
+        + float(tv_lambda) * loss_tv
     )
 
     return {
@@ -594,6 +630,7 @@ def compute_losses(
         "loss_mask_cls": loss_mask_cls,
         "loss_presence": loss_presence,
         "loss_auth_penalty": loss_auth_penalty,
-        "presence_prob": presence_prob.detach(),  # handy for debugging (not used for backprop)
+        "loss_tv": loss_tv,
+        "presence_prob": presence_prob.detach(),
         "loss_total": loss_total,
     }

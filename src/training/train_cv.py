@@ -358,6 +358,7 @@ def run_cv(
                         "loss_mask_cls": float(loss_dict["loss_mask_cls"].detach().cpu()),
                         "loss_presence": float(loss_dict["loss_presence"].detach().cpu()),
                         "loss_auth_penalty": float(loss_dict["loss_auth_penalty"].detach().cpu()),
+                        "loss_tv": float(loss_dict.get("loss_tv", loss_dict["loss_total"] * 0.0).detach().cpu()),
                         "loss_total": float(loss_dict["loss_total"].detach().cpu()),
                         "w_mask_cls": float(getattr(model, "loss_weight_mask_cls", 0.0)),
                         "w_presence": float(getattr(model, "loss_weight_presence", 0.0)),
@@ -448,11 +449,22 @@ def run_cv(
                 "masks_empty": 0,
                 "gate_fail": 0,
                 "num_keep0": 0,
-                "cls_filtered_all_fg": 0,      # any_fg_pre_keep=True but any_fg_post_keep=False
-                "no_fg_pre_keep": 0,           # any_fg_pre_keep == False  (mask head dead)
+                "cls_filtered_all_fg": 0,
+                "no_fg_pre_keep": 0,
                 "max_cls_prob": [],
                 "max_mask_prob": [],
+                "max_qscore": [],
+                "mean_mask_mass": [],
+                "max_mask_mass": [],
+                "selection_mode": [],
+                "mask_threshold": [],
+                "min_mask_mass": [],
+                "qscore_threshold": [],
+                "topk": [],
+                "presence_threshold": [],
+                "cls_threshold": [],
             }
+
 
             for images, targets in val_loader:
                 images = [img.to(device) for img in images]
@@ -476,6 +488,19 @@ def run_cv(
                     # collect scalars (already returned by model.inference)
                     inf_dbg["max_cls_prob"].append(float(out.get("max_cls_prob", 0.0)))
                     inf_dbg["max_mask_prob"].append(float(out.get("max_mask_prob", 0.0)))
+
+                    # NEW (these already exist in model.inference outputs)
+                    inf_dbg["max_qscore"].append(float(out.get("max_qscore", 0.0)))
+                    inf_dbg["mean_mask_mass"].append(float(out.get("mean_mask_mass", 0.0)))
+                    inf_dbg["max_mask_mass"].append(float(out.get("max_mask_mass", 0.0)))
+
+                    inf_dbg["selection_mode"].append(str(out.get("selection_mode", "unknown")))
+
+                    # knobs actually used (per-image, but should be constant within a run)
+                    for k in ["mask_threshold","min_mask_mass","qscore_threshold","topk","presence_threshold","cls_threshold"]:
+                        v = out.get(k, None)
+                        inf_dbg[k].append(None if v is None else float(v))
+
 
                     global_idx = int(t["image_id"].item())
                     sample = full_dataset.samples[global_idx]
@@ -516,9 +541,22 @@ def run_cv(
         # ---- Fold inference debug summary (single structured log) ----
         n = max(int(inf_dbg["n"]), 1)
 
+        import collections
+
         max_cls = torch.tensor(inf_dbg["max_cls_prob"], dtype=torch.float32) if inf_dbg["max_cls_prob"] else torch.tensor([0.0])
         max_msk = torch.tensor(inf_dbg["max_mask_prob"], dtype=torch.float32) if inf_dbg["max_mask_prob"] else torch.tensor([0.0])
 
+        max_qs  = torch.tensor(inf_dbg["max_qscore"], dtype=torch.float32) if inf_dbg["max_qscore"] else torch.tensor([0.0])
+        mm_mass = torch.tensor(inf_dbg["mean_mask_mass"], dtype=torch.float32) if inf_dbg["mean_mask_mass"] else torch.tensor([0.0])
+        mx_mass = torch.tensor(inf_dbg["max_mask_mass"], dtype=torch.float32) if inf_dbg["max_mask_mass"] else torch.tensor([0.0])
+
+        mode_counts = dict(collections.Counter(inf_dbg["selection_mode"]))
+
+        def _uniq_last(xs):
+            xs2 = [x for x in xs if x is not None]
+            uniq = sorted(set(xs2))
+            return {"unique": uniq, "last": (xs2[-1] if xs2 else None)}
+        
         collapse_logger.debug_event(
             "oof_inference_debug",
             {
@@ -546,9 +584,21 @@ def run_cv(
                     "p95": float(max_msk.quantile(0.95).item()),
                     "max": float(max_msk.max().item()),
                 },
+                "max_qscore": {"mean": float(max_qs.mean()), "p95": float(max_qs.quantile(0.95)), "max": float(max_qs.max())},
+                "mean_mask_mass": {"mean": float(mm_mass.mean()), "p95": float(mm_mass.quantile(0.95)), "max": float(mm_mass.max())},
+                "max_mask_mass": {"mean": float(mx_mass.mean()), "p95": float(mx_mass.quantile(0.95)), "max": float(mx_mass.max())},
+
+                "selection_mode_counts": mode_counts,
+
+                # thresholds used (should basically be singletons; log unique + last)
+                "used_mask_threshold": _uniq_last(inf_dbg["mask_threshold"]),
+                "used_min_mask_mass": _uniq_last(inf_dbg["min_mask_mass"]),
+                "used_qscore_threshold": _uniq_last(inf_dbg["qscore_threshold"]),
+                "used_topk": _uniq_last(inf_dbg["topk"]),
+                "used_presence_threshold": _uniq_last(inf_dbg["presence_threshold"]),
+                "used_cls_threshold": _uniq_last(inf_dbg["cls_threshold"]),
             },
         )
-
         # ---- Fold-level OOF distribution + area stats ----
         vi = np.asarray(val_idx, dtype=np.int64)
         fold_auth_frac = float(oof_pred_is_auth[vi].mean()) if vi.size else 0.0

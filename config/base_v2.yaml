@@ -24,7 +24,8 @@ model:
   # Sparsity / regularization (train-time)
   few_queries_lambda: 0.10
   presence_lse_beta: 10.0
-
+  tv_lambda: 0.05
+  
   # Class BCE balancing / discourage extras
   cls_neg_pos_ratio: 8
   cls_neg_weight: 0.25

@@ -636,6 +636,7 @@ class Mask2FormerForgeryModel(nn.Module):
         # sparsity / regularization
         few_queries_lambda=0.10,
         presence_lse_beta=10.0,
+        tv_lambda: float = 0.0,
         # class BCE balancing / discourage extras
         cls_neg_pos_ratio=8,
         cls_neg_weight=0.25,
@@ -686,6 +687,7 @@ class Mask2FormerForgeryModel(nn.Module):
         # -----------------------------
         self.few_queries_lambda = few_queries_lambda
         self.presence_lse_beta = presence_lse_beta
+        self.tv_lambda = tv_lambda
         self.cls_neg_pos_ratio = cls_neg_pos_ratio
         self.cls_neg_weight = cls_neg_weight
         self.cls_unmatched_multiplier = cls_unmatched_multiplier
@@ -798,13 +800,13 @@ class Mask2FormerForgeryModel(nn.Module):
                 loss_weight_mask_bce=self.loss_weight_mask_bce,
                 loss_weight_mask_dice=self.loss_weight_mask_dice,
                 loss_weight_mask_cls=self.loss_weight_mask_cls,
-                loss_weight_presence=getattr(self, "loss_weight_presence", self.loss_weight_img_auth),
                 loss_weight_auth_penalty=self.loss_weight_auth_penalty,
                 # sparse-by-construction knobs
                 train_topk=int(train_topk),
                 train_min_mask_mass=float(train_min_mask_mass),
                 few_queries_lambda=float(getattr(self, "few_queries_lambda", 0.10)),
                 presence_lse_beta=float(getattr(self, "presence_lse_beta", 10.0)),
+                tv_lambda=float(getattr(self, "tv_lambda", 0.0)),
                 # class BCE balancing / discourage extras
                 cls_neg_pos_ratio=int(getattr(self, "cls_neg_pos_ratio", 8)),
                 cls_neg_weight=float(getattr(self, "cls_neg_weight", 0.25)),
