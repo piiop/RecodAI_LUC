@@ -363,7 +363,7 @@ def run_cv(
                         "w_mask_cls": float(getattr(model, "loss_weight_mask_cls", 0.0)),
                         "w_presence": float(getattr(model, "loss_weight_presence", 0.0)),
                         "w_auth_penalty": float(getattr(model, "loss_weight_auth_penalty", 0.0)),
-                        # new sparsity knobs (so logs show what regime you trained)
+                        "tv_lambda": float(getattr(model, "tv_lambda", 0.0)),
                         "train_topk": int(getattr(model, "default_topk", -1) or -1),
                         "train_min_mask_mass": float(getattr(model, "default_min_mask_mass", 0.0) or 0.0),
                         "few_queries_lambda": float(getattr(model, "few_queries_lambda", 0.0)),
