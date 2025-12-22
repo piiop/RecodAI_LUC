@@ -13,13 +13,15 @@ COMMON=(
   -o model.authenticity_penalty_weight=1.0
 )
 
-# Strong TV (stress test)
+# Strong TV (stress test) + convnext_base
 python -m src.cli cv "${COMMON[@]}" \
-  -o trainer.name=mini_tv_0p10_strong \
-  -o model.tv_lambda=0.10
-
-# Strong TV + reduced cls pressure (diagnostic)
-python -m src.cli cv "${COMMON[@]}" \
-  -o trainer.name=mini_tv_0p10_cls1p0 \
+  -o trainer.name=mini_tv_0p10_strong_cnb \
   -o model.tv_lambda=0.10 \
-  -o model.loss_weight_mask_cls=1.0
+  -o model.backbone_name=convnext_base
+
+# Strong TV + reduced cls pressure (diagnostic) + convnext_base
+python -m src.cli cv "${COMMON[@]}" \
+  -o trainer.name=mini_tv_0p10_cls1p0_cnb \
+  -o model.tv_lambda=0.10 \
+  -o model.loss_weight_mask_cls=1.0 \
+  -o model.backbone_name=convnext_base

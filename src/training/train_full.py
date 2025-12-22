@@ -25,7 +25,7 @@ from src.utils.wandb_utils import (
 from src.utils.config_utils import sanitize_model_kwargs
 from src.utils.cls_collapse_logger import ClsCollapseLogger
 
-
+# Helpers
 def collect_optimizer_debug(model, optimizer, keywords=("img_head", "class_head", "gate")):
     opt_param_ids = {id(p) for g in optimizer.param_groups for p in g["params"]}
     named = list(model.named_parameters())
@@ -42,6 +42,29 @@ def collect_optimizer_debug(model, optimizer, keywords=("img_head", "class_head"
         }
     return out
 
+def _move_targets_to_device(targets, device):
+    for t in targets:
+        if "masks" in t:
+            t["masks"] = t["masks"].to(device)
+        if "image_label" in t:
+            t["image_label"] = t["image_label"].to(device)
+
+
+def _safe_logit(p: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    p = p.clamp(eps, 1.0 - eps)
+    return torch.log(p) - torch.log1p(-p)
+
+
+def _presence_prob_lse_from_qscore(qscore: torch.Tensor, beta: float) -> torch.Tensor:
+    # qscore: [B,Q] in [0,1]
+    b = float(beta) if beta is not None else 0.0
+    if b <= 0.0:
+        return qscore.max(dim=1).values
+    qlogit = _safe_logit(qscore)
+    presence_logit = torch.logsumexp(b * qlogit, dim=1) / b
+    return torch.sigmoid(presence_logit)
+
+
 def build_train_dataset(train_transform=None):
     """
     Full training dataset (same data as CV, with chosen train transform).
@@ -50,7 +73,7 @@ def build_train_dataset(train_transform=None):
         transform=train_transform,
     )
     return dataset
-
+# ------ #
 def run_full_train(
     num_epochs=25,
     batch_size=4,
@@ -138,12 +161,14 @@ def run_full_train(
         # fixed debug batch per epoch
         debug_images, debug_targets = next(iter(train_loader))
         debug_images = [img.to(device) for img in debug_images]
+        _move_targets_to_device(debug_targets, device)
         for t in debug_targets:
             t["masks"] = t["masks"].to(device)
             t["image_label"] = t["image_label"].to(device)
 
         for images, targets in train_loader:
             images = [img.to(device) for img in images]
+            _move_targets_to_device(targets, device)
             for t in targets:
                 t["masks"] = t["masks"].to(device)
                 t["image_label"] = t["image_label"].to(device)
@@ -187,16 +212,16 @@ def run_full_train(
             # ---- (was one-time logits/probs stats pre-loss) ----
             if not printed_logit_stats:
                 with torch.no_grad():
-                    # NOTE: forward_logits should no longer return img_logits in v2
-                    out = model(images, inference_overrides={"return_raw": True})
-                    ml = out["mask_logits"]
-                    cl = out["class_logits"]
+                    mask_logits, class_logits = model.forward_logits(images)
 
-                    mask_probs = out["mask_probs"]
-                    class_probs = out["cls_probs"]
-                    mask_mass = out["mask_mass"]
-                    qscore = out["qscore"]
-                    presence_prob = out["presence_prob"]
+                    mask_probs = mask_logits.sigmoid()
+                    cls_probs = class_logits.sigmoid()
+                    mask_mass = mask_probs.flatten(2).mean(-1)  # [B,Q]
+                    qscore = cls_probs * mask_mass              # [B,Q]
+
+                    presence_prob = _presence_prob_lse_from_qscore(
+                        qscore, beta=float(getattr(model, "presence_lse_beta", 0.0))
+                    )
 
                     collapse_logger.debug_event(
                         "debug_logits",
@@ -204,16 +229,16 @@ def run_full_train(
                             "epoch": epoch + 1,
                             "global_step": global_step,
                             "mask_logits": {
-                                "min": ml.min().item(),
-                                "max": ml.max().item(),
-                                "mean": ml.mean().item(),
-                                "std": ml.std().item(),
+                                "min": mask_logits.min().item(),
+                                "max": mask_logits.max().item(),
+                                "mean": mask_logits.mean().item(),
+                                "std": mask_logits.std().item(),
                             },
                             "class_logits": {
-                                "min": cl.min().item(),
-                                "max": cl.max().item(),
-                                "mean": cl.mean().item(),
-                                "std": cl.std().item(),
+                                "min": class_logits.min().item(),
+                                "max": class_logits.max().item(),
+                                "mean": class_logits.mean().item(),
+                                "std": class_logits.std().item(),
                             },
                         },
                     )
@@ -230,9 +255,9 @@ def run_full_train(
                                 "frac_gt_0p5": (mask_probs > 0.5).float().mean().item(),
                             },
                             "class_probs": {
-                                "mean": class_probs.mean().item(),
-                                "max": class_probs.max().item(),
-                                "frac_gt_0p1": (class_probs > 0.1).float().mean().item(),
+                                "mean": cls_probs.mean().item(),
+                                "max": cls_probs.max().item(),
+                                "frac_gt_0p1": (cls_probs > 0.1).float().mean().item(),
                             },
                             "mask_mass": {
                                 "mean": mask_mass.mean().item(),
@@ -247,12 +272,13 @@ def run_full_train(
                                 "mean": presence_prob.mean().item(),
                                 "min": presence_prob.min().item(),
                                 "max": presence_prob.max().item(),
+                                "mode": "lse" if float(getattr(model, "presence_lse_beta", 0.0)) > 0 else "max",
+                                "beta": float(getattr(model, "presence_lse_beta", 0.0)),
                             },
                         },
                     )
 
                 printed_logit_stats = True
-
 
             loss_dict = model(
                 images,
@@ -260,6 +286,9 @@ def run_full_train(
                 inference_overrides={
                     "logger": collapse_logger,
                     "debug_ctx": {"epoch": epoch + 1, "global_step": global_step},
+                    # ensure train-time survival is explicitly aligned with your defaults
+                    "topk": getattr(model, "default_topk", None),
+                    "min_mask_mass": getattr(model, "default_min_mask_mass", None),
                 },
             )
             loss = loss_dict["loss_total"]
@@ -281,6 +310,7 @@ def run_full_train(
                     if torch.is_tensor(loss_dict.get("loss_presence", None))
                     else float(loss_dict.get("loss_presence", 0.0)),
                     "loss_auth_penalty": float(loss_dict["loss_auth_penalty"].detach().cpu()),
+                    "loss_tv": float(loss_dict.get("loss_tv", loss_dict["loss_total"] * 0.0).detach().cpu()),
                     "loss_total": float(loss_dict["loss_total"].detach().cpu()),
                     # weights snapshot (helps sweep analysis)
                     "w_mask_bce": float(getattr(model, "loss_weight_mask_bce", 0.0)),
@@ -289,6 +319,12 @@ def run_full_train(
                     "w_presence": float(getattr(model, "loss_weight_presence", 0.0)),
                     "w_auth_penalty": float(getattr(model, "loss_weight_auth_penalty", 0.0)),
                     "authenticity_penalty_weight": float(getattr(model, "authenticity_penalty_weight", 0.0)),
+                    # knobs (match CV step logging)
+                    "tv_lambda": float(getattr(model, "tv_lambda", 0.0)),
+                    "train_topk": int(getattr(model, "default_topk", -1) or -1),
+                    "train_min_mask_mass": float(getattr(model, "default_min_mask_mass", 0.0) or 0.0),
+                    "few_queries_lambda": float(getattr(model, "few_queries_lambda", 0.0)),
+                    "presence_lse_beta": float(getattr(model, "presence_lse_beta", 0.0)),
                 }
             )
 
@@ -306,18 +342,21 @@ def run_full_train(
             global_step=epoch + 1,
         )
 
-        # ---- epoch-end collapse detectors (no img head; use train-aligned qscore/presence) ----
+        # ---- epoch-end collapse detectors (train-aligned qscore/presence) ----
         model.eval()
         with torch.no_grad():
-            out = model(debug_images, inference_overrides={"return_raw": True})
+            mask_logits, class_logits = model.forward_logits(torch.stack(debug_images, dim=0))
+            mask_probs = mask_logits.sigmoid()
+            cls_probs = class_logits.sigmoid()
 
-            cls_probs = out["cls_probs"]                 # [B,Q]
-            mask_probs_flat = out["mask_probs"].flatten(2)  # [B,Q,HW]
-            qscore = out["qscore"]                       # [B,Q]
-            presence_prob = out["presence_prob"]         # [B]
+            mask_mass = mask_probs.flatten(2).mean(-1)  # [B,Q]
+            qscore = cls_probs * mask_mass              # [B,Q]
+            presence_prob = _presence_prob_lse_from_qscore(
+                qscore, beta=float(getattr(model, "presence_lse_beta", 0.0))
+            )
 
             cls_max = cls_probs.max(dim=1).values
-            mask_max = mask_probs_flat.max(dim=2).values.max(dim=1).values
+            mask_max = mask_probs.flatten(2).max(dim=2).values.max(dim=1).values
             qscore_max = qscore.max(dim=1).values
 
             collapse_logger.log_epoch_summary(
@@ -332,6 +371,7 @@ def run_full_train(
                     "mask_max_mean": mask_max.mean().item(),
                     "qscore_max_mean": qscore_max.mean().item(),
                     "presence_mean": presence_prob.mean().item(),
+                    "presence_mode": "lse" if float(getattr(model, "presence_lse_beta", 0.0)) > 0 else "max",
                     "w_mask_cls": float(getattr(model, "loss_weight_mask_cls", 0.0)),
                 }
             )
