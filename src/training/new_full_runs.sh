@@ -1,26 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# bash src/training/new_full_runs.sh
+
 CFG="${CFG:-base_v2.yaml}"
 EPOCHS_OOF="${EPOCHS_OOF:-25}"
 
-# bash src/training/new_full_runs.sh
-
-# 1) Best mini mean: push cls loss
-python -m src.cli cv -c "$CFG" \
-  -o trainer.name=oof_lossv2_cls_up2_e${EPOCHS_OOF} \
-  -o trainer.epochs="$EPOCHS_OOF" \
+COMMON=(
+  -c "$CFG"
+  -o trainer.epochs="$EPOCHS_OOF"
   -o model.loss_weight_mask_cls=2.0
-
-# 2) Runner-up: weaker auth penalty (less “all-authentic” pressure)
-python -m src.cli cv -c "$CFG" \
-  -o trainer.name=oof_lossv2_authpen_weak1_e${EPOCHS_OOF} \
-  -o trainer.epochs="$EPOCHS_OOF" \
   -o model.authenticity_penalty_weight=1.0
+)
 
-# 3) Combine the two best knobs (if sparsity is truly training-driven, this should win)
-python -m src.cli cv -c "$CFG" \
-  -o trainer.name=oof_lossv2_cls_up2_authpen_weak1_e${EPOCHS_OOF} \
-  -o trainer.epochs="$EPOCHS_OOF" \
-  -o model.loss_weight_mask_cls=2.0 \
-  -o model.authenticity_penalty_weight=1.0
+# Strong TV (stress test)
+python -m src.cli cv "${COMMON[@]}" \
+  -o trainer.name=mini_tv_0p10_strong \
+  -o model.tv_lambda=0.10
+
+# Strong TV + reduced cls pressure (diagnostic)
+python -m src.cli cv "${COMMON[@]}" \
+  -o trainer.name=mini_tv_0p10_cls1p0 \
+  -o model.tv_lambda=0.10 \
+  -o model.loss_weight_mask_cls=1.0
