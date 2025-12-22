@@ -231,7 +231,6 @@ def _safe_logit(p: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     p = p.clamp(eps, 1.0 - eps)
     return torch.log(p) - torch.log1p(-p)
 
-
 def compute_losses(
     mask_logits: torch.Tensor,
     class_logits: torch.Tensor,

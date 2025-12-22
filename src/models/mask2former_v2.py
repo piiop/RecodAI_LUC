@@ -18,8 +18,18 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-from torchvision.models import convnext_tiny, ConvNeXt_Tiny_Weights
+from torchvision.models import (
+    convnext_tiny,
+    convnext_small,
+    convnext_base,
+    convnext_large,
+    ConvNeXt_Tiny_Weights,
+    ConvNeXt_Small_Weights,
+    ConvNeXt_Base_Weights,
+    ConvNeXt_Large_Weights,
+)
 from torchvision.ops import FeaturePyramidNetwork
+
 
 from .losses_metrics import compute_losses
 
@@ -336,21 +346,25 @@ class ConvNeXtFPNBackbone(nn.Module):
         super().__init__()
         self.out_indices = out_indices
 
-        # Backbone selector (future-proof for convnext_small/base)
-        if backbone_name == "convnext_tiny":
-            try:
-                backbone = convnext_tiny(
-                    weights=ConvNeXt_Tiny_Weights.IMAGENET1K_V1 if pretrained else None
-                )
-            except Exception:
-                backbone = convnext_tiny(weights=None)
-        else:
-            raise ValueError(f"Unsupported backbone: {backbone_name}")
+        # Backbone selector
+        backbone_specs = {
+            "convnext_tiny":  (convnext_tiny,  ConvNeXt_Tiny_Weights.IMAGENET1K_V1,  [96, 192, 384, 768]),
+            "convnext_small": (convnext_small, ConvNeXt_Small_Weights.IMAGENET1K_V1, [96, 192, 384, 768]),
+            "convnext_base":  (convnext_base,  ConvNeXt_Base_Weights.IMAGENET1K_V1,  [128, 256, 512, 1024]),
+            "convnext_large": (convnext_large, ConvNeXt_Large_Weights.IMAGENET1K_V1, [192, 384, 768, 1536]),
+        }
+
+        if backbone_name not in backbone_specs:
+            raise ValueError(f"Unsupported backbone: {backbone_name}. Supported: {sorted(backbone_specs.keys())}")
+
+        ctor, weights_enum, in_channels_list = backbone_specs[backbone_name]
+
+        try:
+            backbone = ctor(weights=weights_enum if pretrained else None)
+        except Exception:
+            backbone = ctor(weights=None)
 
         self.body = backbone.features
-
-        # channel dims for convnext_tiny's blocks
-        in_channels_list = [96, 192, 384, 768]
 
         self.fpn = FeaturePyramidNetwork(
             in_channels_list=in_channels_list,
@@ -741,7 +755,6 @@ class Mask2FormerForgeryModel(nn.Module):
         self.class_head = nn.Linear(d_model, 1)  # forgery vs ignore, per query
         self.mask_embed_head = nn.Linear(d_model, mask_dim)
 
-
     def forward(self, images, targets=None, inference_overrides=None):
         """
         images: Tensor [B, 3, H, W] or list[Tensor(C,H,W)]
@@ -800,6 +813,7 @@ class Mask2FormerForgeryModel(nn.Module):
                 loss_weight_mask_bce=self.loss_weight_mask_bce,
                 loss_weight_mask_dice=self.loss_weight_mask_dice,
                 loss_weight_mask_cls=self.loss_weight_mask_cls,
+                loss_weight_presence=self.loss_weight_presence,
                 loss_weight_auth_penalty=self.loss_weight_auth_penalty,
                 # sparse-by-construction knobs
                 train_topk=int(train_topk),
@@ -851,7 +865,6 @@ class Mask2FormerForgeryModel(nn.Module):
 
         return preds
 
-
     @torch.no_grad()
     def forward_logits(self, images):
         if isinstance(images, list):
@@ -889,7 +902,6 @@ class Mask2FormerForgeryModel(nn.Module):
         qscore[q]   = sigmoid(class_logit[q]) * mean(sigmoid(mask_logit[q]))
         presence    = max_q qscore[q]
         """
-        import torch
 
         B, Q, Hm, Wm = mask_logits.shape
 

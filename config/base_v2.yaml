@@ -5,6 +5,10 @@ experiment:
 
 model:
   type: mask2former_v2
+    # Backbone
+  backbone_name: convnext_tiny   # convnext_small / base / large
+  pretrained_backbone: true
+  backbone_trainable: true
 
   # Hungarian matching costs
   cost_bce: 1.0
