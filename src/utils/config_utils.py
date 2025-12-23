@@ -223,15 +223,15 @@ def add_config_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentPa
     Attach common config-related CLI arguments to an argparse parser.
 
     Adds:
-        --base-config:  name/path of base config (default: base.yaml under config/)
+        --base-config:  name/path of base config (default: base_v2.yaml under config/)
         --config, -c:   additional config(s), later override earlier
         --override, -o: KEY=VALUE overrides (can be dotted, can repeat)
     """
     parser.add_argument(
         "--base-config",
         type=str,
-        default="base.yaml",
-        help="Base YAML config (name or path, default: base.yaml).",
+        default="base_v2.yaml",
+        help="Base YAML config (name or path, default: base_v2.yaml).",
     )
     parser.add_argument(
         "--config",

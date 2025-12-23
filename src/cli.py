@@ -7,7 +7,7 @@ CLI flags exist only for truly top-level concerns (command, device, seed).
 
 Usage
 -----
-python -m src.cli cv -c base.yaml -o trainer.lr=3e-4
+python -m src.cli cv -c base_v2.yaml -o trainer.lr=3e-4
 python -m src.cli full-train -c best_oof.yaml
 """
 
