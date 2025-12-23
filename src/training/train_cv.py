@@ -14,7 +14,7 @@ import os
 import json
 import argparse
 from pathlib import Path
-
+import collections
 import numpy as np
 import pandas as pd
 from PIL import Image
@@ -44,7 +44,6 @@ from src.utils.wandb_utils import (
 from src.utils.config_utils import sanitize_model_kwargs
 from src.utils.cls_collapse_logger import ClsCollapseLogger
 
-
 def collect_optimizer_debug(model, optimizer, keywords=("img_head", "class_head", "gate")):
     opt_param_ids = {id(p) for g in optimizer.param_groups for p in g["params"]}
     named = list(model.named_parameters())
@@ -60,7 +59,6 @@ def collect_optimizer_debug(model, optimizer, keywords=("img_head", "class_head"
             "examples": [n for n, _ in matched[:3]],
         }
     return out
-
 
 def build_solution_df(dataset):
     """
@@ -335,13 +333,12 @@ def run_cv(
                     inference_overrides={
                         "logger": collapse_logger,
                         "debug_ctx": {"fold": fold + 1, "epoch": epoch + 1, "global_step": global_step},
-                        # ensure train-time survival is explicitly aligned with your defaults
+                        # ensure train-time survival is explicitly aligned with defaults
                         "topk": getattr(model, "default_topk", None),
                         "min_mask_mass": getattr(model, "default_min_mask_mass", None),
                     },
                 )
                 loss = loss_dict["loss_total"]
-
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -485,11 +482,8 @@ def run_cv(
                     if not bool(out.get("any_fg_pre_keep", False)):
                         inf_dbg["no_fg_pre_keep"] += 1    
 
-                    # collect scalars (already returned by model.inference)
                     inf_dbg["max_cls_prob"].append(float(out.get("max_cls_prob", 0.0)))
                     inf_dbg["max_mask_prob"].append(float(out.get("max_mask_prob", 0.0)))
-
-                    # NEW (these already exist in model.inference outputs)
                     inf_dbg["max_qscore"].append(float(out.get("max_qscore", 0.0)))
                     inf_dbg["mean_mask_mass"].append(float(out.get("mean_mask_mass", 0.0)))
                     inf_dbg["max_mask_mass"].append(float(out.get("max_mask_mass", 0.0)))
@@ -540,8 +534,6 @@ def run_cv(
 
         # ---- Fold inference debug summary (single structured log) ----
         n = max(int(inf_dbg["n"]), 1)
-
-        import collections
 
         max_cls = torch.tensor(inf_dbg["max_cls_prob"], dtype=torch.float32) if inf_dbg["max_cls_prob"] else torch.tensor([0.0])
         max_msk = torch.tensor(inf_dbg["max_mask_prob"], dtype=torch.float32) if inf_dbg["max_mask_prob"] else torch.tensor([0.0])
@@ -596,7 +588,6 @@ def run_cv(
                 "used_qscore_threshold": _uniq_last(inf_dbg["qscore_threshold"]),
                 "used_topk": _uniq_last(inf_dbg["topk"]),
                 "used_presence_threshold": _uniq_last(inf_dbg["presence_threshold"]),
-                "used_cls_threshold": _uniq_last(inf_dbg["cls_threshold"]),
             },
         )
         # ---- Fold-level OOF distribution + area stats ----

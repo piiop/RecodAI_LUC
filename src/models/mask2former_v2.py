@@ -12,7 +12,6 @@ Supports training (returns loss dict) and inference (returns masks,
 scores, and image-level forged probability).
 """ 
 
-import numpy as np
 import copy
 import torch
 import torch.nn as nn
@@ -30,7 +29,6 @@ from torchvision.models import (
 )
 from torchvision.ops import FeaturePyramidNetwork
 
-
 from .losses_metrics import compute_losses
 
 def _get_level_start_index(spatial_shapes: torch.Tensor) -> torch.Tensor:
@@ -38,7 +36,6 @@ def _get_level_start_index(spatial_shapes: torch.Tensor) -> torch.Tensor:
     level_start_index = torch.zeros((spatial_shapes.size(0),), dtype=torch.long, device=spatial_shapes.device)
     level_start_index[1:] = torch.cumsum(spatial_shapes[:, 0] * spatial_shapes[:, 1], dim=0)[:-1]
     return level_start_index
-
 
 def _build_reference_points(spatial_shapes: torch.Tensor, device) -> torch.Tensor:
     """
@@ -55,7 +52,6 @@ def _build_reference_points(spatial_shapes: torch.Tensor, device) -> torch.Tenso
         ref = torch.stack((x / W, y / H), dim=-1)  # [H, W, 2]
         ref_list.append(ref.reshape(-1, 2))
     return torch.cat(ref_list, dim=0).unsqueeze(0)  # [1, S, 2]
-
 
 class MSDeformAttn(nn.Module):
     """
@@ -168,7 +164,6 @@ class MSDeformAttn(nn.Module):
         output = self.output_proj(output)
         return output
 
-
 class MSDeformAttnEncoderLayer(nn.Module):
     def __init__(self, d_model=256, n_heads=8, n_levels=3, n_points=4, dim_feedforward=1024, dropout=0.1):
         super().__init__()
@@ -193,7 +188,6 @@ class MSDeformAttnEncoderLayer(nn.Module):
         src = self.norm2(src + self.drop2(src2))
         return src
 
-
 class MSDeformAttnEncoder(nn.Module):
     def __init__(self, layer, num_layers):
         super().__init__()
@@ -204,7 +198,6 @@ class MSDeformAttnEncoder(nn.Module):
         for l in self.layers:
             out = l(out, pos, spatial_shapes, level_start_index, reference_points)
         return out
-
 
 class Mask2FormerPixelDecoder(nn.Module):
     """
@@ -607,13 +600,6 @@ class Mask2FormerForgeryModel(nn.Module):
     Instance-Seg Transformer (Mask2Former-style) + Authenticity Gate baseline.
     """
 
-    @staticmethod
-    def _coerce_thresh(name, value, default=0.5):
-        if value is None:
-            print(f"[Warning] `{name}` was None — coercing to default={default}.")
-            return default
-        return value
-
     def __init__(
         self,
         num_queries=15,
@@ -630,7 +616,6 @@ class Mask2FormerForgeryModel(nn.Module):
         fpn_out_channels=256,
         # inference thresholds
         default_mask_threshold=0.0,
-        default_cls_threshold=0.0,  # legacy (kept for backwards compat in inference)
         # train-aligned inference knobs
         default_qscore_threshold=None,
         default_topk=None,
@@ -672,9 +657,6 @@ class Mask2FormerForgeryModel(nn.Module):
         # Thresholds / inference knobs
         # -----------------------------
         self.default_mask_threshold = default_mask_threshold
-        self.default_cls_threshold = self._coerce_thresh(
-            "default_cls_threshold", default_cls_threshold
-        )
         self.default_qscore_threshold = default_qscore_threshold
         self.default_topk = default_topk
         self.default_min_mask_mass = default_min_mask_mass
@@ -738,7 +720,7 @@ class Mask2FormerForgeryModel(nn.Module):
         # Pixel decoder / mask feature projection
         # -----------------------------
         self.pixel_decoder = Mask2FormerPixelDecoder(
-            in_channels=fpn_out_channels,   # 256 from your FPN
+            in_channels=fpn_out_channels,   # 256 from FPN
             conv_dim=d_model,               # 256
             mask_dim=mask_dim,              # 256
             n_levels=3,                     # use P3,P4,P5 for deform encoder
@@ -836,7 +818,6 @@ class Mask2FormerForgeryModel(nn.Module):
             mask_logits=mask_logits,
             class_logits=class_logits,
             mask_threshold=overrides.get("mask_threshold", None),
-            cls_threshold=overrides.get("cls_threshold", None),               # legacy
             qscore_threshold=overrides.get("qscore_threshold", None),         # preferred
             topk=overrides.get("topk", None),
             min_mask_mass=overrides.get("min_mask_mass", None),
@@ -885,7 +866,6 @@ class Mask2FormerForgeryModel(nn.Module):
         mask_logits,
         class_logits,
         mask_threshold=None,
-        cls_threshold=None,          # legacy (kept for backwards compat)
         qscore_threshold=None,       # threshold on (cls_prob * mask_mass)
         topk=None,                  # keep top-k queries by qscore (per image)
         min_mask_mass=None,         # additional filter on mask_mass (fraction of pixels)
@@ -905,22 +885,12 @@ class Mask2FormerForgeryModel(nn.Module):
 
         B, Q, Hm, Wm = mask_logits.shape
 
-        # Defaults (kept compatible with existing config knobs if present)
-        if mask_threshold is None:
-            mask_threshold = getattr(self, "default_mask_threshold", 0.5)
-
-        # Prefer qscore thresholding by default (train-aligned)
-        if qscore_threshold is None:
-            qscore_threshold = getattr(self, "default_qscore_threshold", None)
-
-        if topk is None:
-            topk = getattr(self, "default_topk", None)
-
-        if min_mask_mass is None:
-            min_mask_mass = getattr(self, "default_min_mask_mass", None)
-
-        if presence_threshold is None:
-            presence_threshold = getattr(self, "default_presence_threshold", None)
+        # Ensure defaults if not specified
+        mask_threshold      = mask_threshold      if mask_threshold      is not None else self.default_mask_threshold
+        qscore_threshold    = qscore_threshold    if qscore_threshold    is not None else self.default_qscore_threshold
+        topk                = topk                if topk                is not None else self.default_topk
+        min_mask_mass       = min_mask_mass       if min_mask_mass       is not None else self.default_min_mask_mass
+        presence_threshold  = presence_threshold  if presence_threshold  is not None else self.default_presence_threshold
 
         # Shapes: allow class_logits to be [B,Q,1]
         if class_logits.dim() == 3 and class_logits.size(-1) == 1:
@@ -955,10 +925,7 @@ class Mask2FormerForgeryModel(nn.Module):
             elif qscore_threshold is not None:
                 keep = qscore[b] > float(qscore_threshold)
             else:
-                # Legacy fallback (not train-aligned, but preserved)
-                if cls_threshold is None:
-                    cls_threshold = getattr(self, "default_cls_threshold", 0.5)
-                keep = cls_probs[b] > float(cls_threshold)
+                keep = torch.ones(Q, dtype=torch.bool, device=mask_logits.device)  # fallback
 
             # Optional additional filter
             if min_mask_mass is not None:
@@ -990,10 +957,9 @@ class Mask2FormerForgeryModel(nn.Module):
                     "any_fg_pre_keep": any_fg_pre_keep,
                     "any_fg_post_keep": False,
                     "selection_mode": "topk" if (topk is not None and int(topk) > 0)
-                                    else ("qscore_thr" if qscore_threshold is not None else "cls_thr"),
+                                    else ("qscore_thr" if qscore_threshold is not None else "all"),
                     "mask_threshold": float(mask_threshold),
                     "qscore_threshold": None if qscore_threshold is None else float(qscore_threshold),
-                    "cls_threshold": None if cls_threshold is None else float(cls_threshold),
                     "topk": None if topk is None else int(topk),
                     "min_mask_mass": None if min_mask_mass is None else float(min_mask_mass),
                     "presence_threshold": None if presence_threshold is None else float(presence_threshold),
@@ -1026,10 +992,9 @@ class Mask2FormerForgeryModel(nn.Module):
                 "any_fg_pre_keep": any_fg_pre_keep,
                 "any_fg_post_keep": any_fg_post_keep,
                 "selection_mode": "topk" if (topk is not None and int(topk) > 0)
-                                else ("qscore_thr" if qscore_threshold is not None else "cls_thr"),
+                                else ("qscore_thr" if qscore_threshold is not None else "all"),
                 "mask_threshold": float(mask_threshold),
                 "qscore_threshold": None if qscore_threshold is None else float(qscore_threshold),
-                "cls_threshold": None if cls_threshold is None else float(cls_threshold),
                 "topk": None if topk is None else int(topk),
                 "min_mask_mass": None if min_mask_mass is None else float(min_mask_mass),
                 "presence_threshold": None if presence_threshold is None else float(presence_threshold),

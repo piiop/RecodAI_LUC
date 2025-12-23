@@ -12,7 +12,6 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.data.dataloader import ForgeryDataset, get_train_transform, detection_collate_fn
-
 from src.models.mask2former_v2 import Mask2FormerForgeryModel
 from src.utils.seed_logging_utils import setup_seed, log_seed_info
 from src.utils.wandb_utils import (
@@ -173,7 +172,6 @@ def run_full_train(
                 t["masks"] = t["masks"].to(device)
                 t["image_label"] = t["image_label"].to(device)
 
-            # ---- (was print of target[0] stats) ----
             t0 = targets[0]
             m0 = t0["masks"]
             collapse_logger.debug_event(
@@ -187,7 +185,6 @@ def run_full_train(
                 },
             )
 
-            # ---- (was one-time sanity block) ----
             if not printed_mask_stats:
                 payload = {"epoch": epoch + 1, "global_step": global_step, "per_image": []}
                 with torch.no_grad():
@@ -209,7 +206,7 @@ def run_full_train(
                 collapse_logger.debug_event("mask_target_sanity", payload)
                 printed_mask_stats = True
 
-            # ---- (was one-time logits/probs stats pre-loss) ----
+            # ---- logits/probs stats pre-loss ----
             if not printed_logit_stats:
                 with torch.no_grad():
                     mask_logits, class_logits = model.forward_logits(images)
@@ -297,7 +294,7 @@ def run_full_train(
             loss.backward()
             optimizer.step()
 
-            # ---- step loss logging (aligned with refactored losses) ----
+            # ---- step loss logging ----
             collapse_logger.log_step_losses(
                 {
                     "epoch": epoch + 1,
