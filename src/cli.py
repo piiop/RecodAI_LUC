@@ -99,6 +99,7 @@ def _run_cv(args):
     cfg_dict = cfg.to_dict()
     t = cfg_dict.get("trainer", {}) or {}
     m = cfg_dict.get("model", {}) or {}
+    d = cfg_dict.get("data", {}) or {}     
 
     device = _resolve_device(args.device)
     setup_seed(args.seed, deterministic=args.deterministic)
@@ -120,6 +121,7 @@ def _run_cv(args):
             lr=t.get("lr", 1e-4),
             weight_decay=t.get("weight_decay", 1e-4),
             device=device,
+            img_size=d.get("img_size", None),
             out_dir=str(out_dir),
             debug_out_dir=str(out_dir),
             train_transform=None,
@@ -135,6 +137,7 @@ def _run_full_train(args):
     cfg_dict = cfg.to_dict()
     t = cfg_dict.get("trainer", {}) or {}
     m = cfg_dict.get("model", {}) or {}
+    d = cfg_dict.get("data", {}) or {}    
 
     device = _resolve_device(args.device)
     setup_seed(args.seed, deterministic=args.deterministic)
@@ -154,6 +157,7 @@ def _run_full_train(args):
             lr=t.get("lr", 1e-4),
             weight_decay=t.get("weight_decay", 1e-4),
             device=device,
+            img_size=t.get("img_size", None) or d.get("img_size", None),            
             train_transform=None,
             save_path=save_path,
             model_kwargs=model_kwargs,

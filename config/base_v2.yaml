@@ -52,6 +52,7 @@ trainer:
   batch_size: 4
   lr: 1.0e-4
   weight_decay: 1.0e-4
+  img_size: 256  
 
   # CV-only
   n_folds: 3

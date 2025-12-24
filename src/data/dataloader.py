@@ -44,10 +44,29 @@ MASKS_DIR = DATA_DIR / "train_masks"
 SUPP_FORGED_DIR = DATA_DIR / "supplemental_images"
 SUPP_MASKS_DIR = DATA_DIR / "supplemental_masks"
 
+DEFAULT_IMG_SIZE = 256
+
 
 def _is_image_file(p: Path) -> bool:
     return p.is_file() and p.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
 
+def _resolve_img_size(img_size: Optional[int]) -> int:
+    """
+    Central img_size resolver so we can later wire YAML/CLI -> env or explicit arg.
+    Precedence:
+      1) explicit img_size argument
+      2) env var DATA_IMG_SIZE / IMG_SIZE
+      3) DEFAULT_IMG_SIZE
+    """
+    if img_size is not None:
+        return int(img_size)
+
+    for k in ("DATA_IMG_SIZE", "IMG_SIZE"):
+        v = os.getenv(k, "").strip()
+        if v:
+            return int(v)
+
+    return int(DEFAULT_IMG_SIZE)
 
 def _load_mask_instances(mask_path: Path, *, expected_h: int, expected_w: int) -> np.ndarray:
     """
@@ -290,8 +309,9 @@ class ForgeryDataset(Dataset):
         return np.stack(inst, axis=0).astype(np.uint8)
 
 
-def get_train_transform(img_size: int = 256) -> A.BasicTransform:
+def get_train_transform(img_size: Optional[int] = None) -> A.BasicTransform:
     # NOTE: Using ReplayCompose enables consistent per-instance transforms.
+    img_size = _resolve_img_size(img_size)
     return A.ReplayCompose(
         [
             A.Resize(img_size, img_size),
@@ -303,8 +323,8 @@ def get_train_transform(img_size: int = 256) -> A.BasicTransform:
         ]
     )
 
-
-def get_val_transform(img_size: int = 256) -> A.BasicTransform:
+def get_val_transform(img_size: Optional[int] = None) -> A.BasicTransform:
+    img_size = _resolve_img_size(img_size)
     return A.Compose(
         [
             A.Resize(img_size, img_size),
@@ -312,7 +332,6 @@ def get_val_transform(img_size: int = 256) -> A.BasicTransform:
             ToTensorV2(),
         ]
     )
-
 
 def detection_collate_fn(
     batch: List[Tuple[torch.Tensor, Dict[str, torch.Tensor]]]
@@ -348,47 +367,6 @@ def make_groupkfold_splits(
     for tr, va in gkf.split(idx, y=None, groups=groups):
         splits.append((tr.tolist(), va.tolist()))
     return splits
-
-
-def create_groupkfold_loaders_for_fold(
-    fold: int,
-    n_splits: int = 5,
-    batch_size: int = 4,
-    num_workers: int = 4,
-    img_size: int = 256,
-) -> Tuple[DataLoader, DataLoader]:
-    """
-    Build train/val loaders for a specific GroupKFold fold.
-    """
-    # use ReplayCompose for train so instances stay aligned post-aug
-    ds_train = ForgeryDataset(transform=get_train_transform(img_size))
-    ds_val = ForgeryDataset(transform=get_val_transform(img_size))
-
-    base_ds = ForgeryDataset(transform=None)
-    splits = make_groupkfold_splits(base_ds, n_splits=n_splits)
-    train_idx, val_idx = splits[fold]
-
-    train_loader = DataLoader(
-        torch.utils.data.Subset(ds_train, train_idx),
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=True,
-        collate_fn=detection_collate_fn,
-        persistent_workers=num_workers > 0,
-    )
-
-    val_loader = DataLoader(
-        torch.utils.data.Subset(ds_val, val_idx),
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True,
-        collate_fn=detection_collate_fn,
-        persistent_workers=num_workers > 0,
-    )
-
-    return train_loader, val_loader
 
 def dump_random_sample_csv(
     out_csv: str | Path,

@@ -79,6 +79,7 @@ def run_full_train(
     lr=1e-4,
     weight_decay=1e-4,
     device=None,
+    img_size=None,     
     train_transform=None,
     save_path="weights/full_train/model_full_data_baseline.pth",
     model_kwargs=None,
@@ -103,7 +104,7 @@ def run_full_train(
 
     # Full dataset with same transforms as CV training
     if train_transform is None:
-        train_transform = get_train_transform()
+        train_transform = get_train_transform(img_size=img_size)
     train_dataset = build_train_dataset(train_transform=train_transform)
 
     train_loader = DataLoader(

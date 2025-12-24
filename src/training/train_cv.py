@@ -141,6 +141,7 @@ def run_cv(
     lr=1e-4,
     weight_decay=1e-4,
     device=None,
+    img_size=None,    
     train_transform=None,
     val_transform=None,
     out_dir="experiments/oof_results",
@@ -160,9 +161,9 @@ def run_cv(
         debug_out_dir = out_dir    
 
     if train_transform is None:
-        train_transform = get_train_transform()
+        train_transform = get_train_transform(img_size=img_size)  
     if val_transform is None:
-        val_transform = get_val_transform()
+        val_transform = get_val_transform(img_size=img_size)
 
     full_dataset, ds_train, ds_val = make_datasets(
         train_transform=train_transform, val_transform=val_transform
@@ -716,6 +717,7 @@ def main():
             lr=args.lr,
             weight_decay=args.weight_decay,
             device=device,
+            img_size=getattr(args, "img_size", None),
             train_transform=None,
             val_transform=None,
             out_dir=args.out_dir,
