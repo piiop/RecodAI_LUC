@@ -1,19 +1,18 @@
 # =========================
+
+# bash src/training/new_loss_test2.sh
 # FULL RUNS (baseline/full)
 # =========================
 
 # Full baseline training
 python -m src.cli full-train -c base.yaml
 
-python -m src.cli full-train \
-  -c base_v2.yaml \
+# Full train (fixed setting): loss_weight_mask_cls=0.25
+python -m src.cli full-train -c base.yaml \
   -o trainer.epochs=25 \
-  -o trainer.name=full_tv_0p10_cls1p0_cnb \
-  -o trainer.save_path=weights/full_train/full_tv_0p10_cls1p0_cnb.pth \
-  -o model.tv_lambda=0.10 \
-  -o model.loss_weight_mask_cls=1.0 \
-  -o model.authenticity_penalty_weight=1.0 \
-  -o model.backbone_name=convnext_base
+  -o model.loss_weight_mask_cls=0.25 \
+  -o trainer.name=full_cls_w0.25_groupfold \
+  -o trainer.save_path=weights/full_train/full_cls_w0.25_groupfold.pth
 
 
 # =================
@@ -30,10 +29,22 @@ python -m src.cli cv \
   -o trainer.name=base_wgroupkfold \
   -o trainer.epochs=20
 
-# Current Best
+# Best 
+python -m src.cli cv \
+  -c base_v2.yaml \
+  -o trainer.epochs=25 \
+  -o trainer.n_folds=3 \
+  -o trainer.name=oof_tv_0p10_cls1p0_cnb_tk1_mm0p002_pr0p02_m0p5 \
+  -o model.tv_lambda=0.10 \
+  -o model.loss_weight_mask_cls=1.0 \
+  -o model.authenticity_penalty_weight=1.0 \
+  -o model.backbone_name=convnext_base \
+  -o model.default_topk=1 \
+  -o model.default_qscore_threshold=null \
+  -o model.default_min_mask_mass=0.002 \
+  -o model.default_presence_threshold=0.02 \
+  -o model.default_mask_threshold=0.5
   
-
-
 # =========================
 # MINI SMOKE RUNS (fast)
 # =========================
@@ -77,12 +88,15 @@ python -m src.inference.auth_gate_sweep \
 # Sweep: cls_threshold_sweep
 
 python -m src.inference.cls_threshold_sweep \
-  -c base_v2.yaml \
-  --weights weights/full_train/full_tv_0p10_cls1p0_cnb.pth \
-  --mask_threshold 0.50 \
-  --qscore_thresholds 0.01 0.02 0.03 0.05 \
-  --topk 0 1 2 3 \
-  --min_mask_mass 0.0 0.001 0.002 \
-  --presence_thresholds -1 0.01 0.02 \
-  --area_thresholds -1 0.001 0.002 \
-  --out_dir experiments/qscore_sweep_v2
+  -c base.yaml \
+  --weights weights/full_train/full_cls_w0.25.pth \
+  --cls_thresholds 0.05 0.1 0.15 0.2 0.25 0.3 0.4 \
+  --out_dir experiments/cls_thresh_w0.25
+
+python -m src.inference.cls_threshold_sweep \
+  -c base.yaml \
+  --weights weights/full_train/model_full_data_baseline.pth \
+  --cls_thresholds 0.05 0.10 0.15 0.20 0.30 \
+  --area_thresholds 0.0005 0.001 0.002 0.005 0.01 \
+  --topk 1 2 3 5 \
+  --out_dir experiments/cls_area_topk_sweep
