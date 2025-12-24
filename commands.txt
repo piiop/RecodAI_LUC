@@ -5,12 +5,15 @@
 # Full baseline training
 python -m src.cli full-train -c base.yaml
 
-# Full train (fixed setting): loss_weight_mask_cls=0.25
-python -m src.cli full-train -c base.yaml \
+python -m src.cli full-train \
+  -c base_v2.yaml \
   -o trainer.epochs=25 \
-  -o model.loss_weight_mask_cls=0.25 \
-  -o trainer.name=full_cls_w0.25_groupfold \
-  -o trainer.save_path=weights/full_train/full_cls_w0.25_groupfold.pth
+  -o trainer.name=full_tv_0p10_cls1p0_cnb \
+  -o trainer.save_path=weights/full_train/full_tv_0p10_cls1p0_cnb.pth \
+  -o model.tv_lambda=0.10 \
+  -o model.loss_weight_mask_cls=1.0 \
+  -o model.authenticity_penalty_weight=1.0 \
+  -o model.backbone_name=convnext_base
 
 
 # =================
@@ -26,6 +29,9 @@ python -m src.cli cv \
   -o model.default_cls_threshold=0.2 \
   -o trainer.name=base_wgroupkfold \
   -o trainer.epochs=20
+
+# Current Best
+  
 
 
 # =========================
@@ -72,7 +78,7 @@ python -m src.inference.auth_gate_sweep \
 
 python -m src.inference.cls_threshold_sweep \
   -c base_v2.yaml \
-  --weights weights/full_train/model_full_data_baseline.pth \
+  --weights weights/full_train/full_tv_0p10_cls1p0_cnb.pth \
   --mask_threshold 0.50 \
   --qscore_thresholds 0.01 0.02 0.03 0.05 \
   --topk 0 1 2 3 \
