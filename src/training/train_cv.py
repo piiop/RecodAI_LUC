@@ -60,6 +60,73 @@ def collect_optimizer_debug(model, optimizer, keywords=("img_head", "class_head"
         }
     return out
 
+# --- add this helper (e.g., near other helpers like build_solution_df) ---
+def _fold_data_summary(full_dataset, train_idx, val_idx):
+    def _summarize(idxs):
+        n = int(len(idxs))
+        if n == 0:
+            return {
+                "n": 0,
+                "forged_frac": 0.0,
+                "auth_frac": 0.0,
+                "gt_instance_count": {"mean": 0.0, "p95": 0.0},
+                "gt_union_area_ratio": {"mean": 0.0, "p95": 0.0},
+            }
+
+        forged_flags = []
+        inst_counts = np.zeros(n, dtype=np.float32)
+        union_ratios = np.zeros(n, dtype=np.float32)
+
+        for j, i in enumerate(idxs):
+            s = full_dataset.samples[int(i)]
+            is_forged = bool(s.get("is_forged", False))
+            forged_flags.append(is_forged)
+
+            if not is_forged:
+                inst_counts[j] = 0.0
+                union_ratios[j] = 0.0
+                continue
+
+            mp = s.get("mask_path", None)
+            if (not mp) or (not os.path.exists(mp)):
+                inst_counts[j] = 0.0
+                union_ratios[j] = 0.0
+                continue
+
+            m = np.load(mp)
+
+            if m.ndim == 3:
+                # count non-empty instances
+                flat = m.reshape(m.shape[0], -1)
+                inst_counts[j] = float((flat > 0).any(axis=1).sum())
+                union = (m > 0).any(axis=0)
+                denom = max(int(union.size), 1)
+                union_ratios[j] = float(union.sum() / denom)
+            else:
+                mm = (m > 0)
+                inst_counts[j] = float(1.0 if mm.any() else 0.0)
+                denom = max(int(mm.size), 1)
+                union_ratios[j] = float(mm.sum() / denom)
+
+        forged_frac = float(np.mean(forged_flags)) if forged_flags else 0.0
+        auth_frac = 1.0 - forged_frac
+
+        return {
+            "n": n,
+            "forged_frac": forged_frac,
+            "auth_frac": auth_frac,
+            "gt_instance_count": {
+                "mean": float(inst_counts.mean()) if n else 0.0,
+                "p95": float(np.quantile(inst_counts, 0.95)) if n else 0.0,
+            },
+            "gt_union_area_ratio": {
+                "mean": float(union_ratios.mean()) if n else 0.0,
+                "p95": float(np.quantile(union_ratios, 0.95)) if n else 0.0,
+            },
+        }
+
+    return {"train": _summarize(train_idx), "val": _summarize(val_idx)}
+
 def build_solution_df(dataset):
     """
     Build Kaggle-style solution_df for the FULL training dataset.
@@ -240,6 +307,13 @@ def run_cv(
                 "train_len": len(train_idx),
                 "val_len": len(val_idx),
             }
+        )
+        collapse_logger.debug_event(
+            "fold_data_summary",
+            {
+                "fold": fold + 1,
+                **_fold_data_summary(full_dataset, train_idx, val_idx),
+            },
         )
         collapse_logger.write_optimizer_debug(collect_optimizer_debug(model, optimizer))
 
@@ -460,7 +534,6 @@ def run_cv(
                 "qscore_threshold": [],
                 "topk": [],
                 "presence_threshold": [],
-                "cls_threshold": [],
             }
 
 
@@ -492,7 +565,7 @@ def run_cv(
                     inf_dbg["selection_mode"].append(str(out.get("selection_mode", "unknown")))
 
                     # knobs actually used (per-image, but should be constant within a run)
-                    for k in ["mask_threshold","min_mask_mass","qscore_threshold","topk","presence_threshold","cls_threshold"]:
+                    for k in ["mask_threshold","min_mask_mass","qscore_threshold","topk","presence_threshold"]:
                         v = out.get(k, None)
                         inf_dbg[k].append(None if v is None else float(v))
 

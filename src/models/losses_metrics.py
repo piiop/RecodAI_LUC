@@ -112,24 +112,38 @@ def hungarian_match(
     """
     Run Hungarian matching per image.
 
-    Args:
-        mask_logits: [B, Q, Hm, Wm] predicted logits
-        targets: list of dicts with key 'masks': [N_gt, H, W]
-        cost_bce: BCE weight for matching
-        cost_dice: Dice weight for matching
-        allowed_queries: optional list length B of bool masks [Q] (True=eligible)
-        extra_query_cost: optional list length B of float costs [Q] added to all rows of cost matrix
-                         (useful to bias matching toward/away from certain queries)
-        logger: optional logger with .debug_event(tag, payload)
-        debug_ctx: optional dict to attach to logs
-
-    Returns:
-        indices: list of length B, each (pred_ind, tgt_ind) as LongTensors (pred indices are in original Q space)
+    Per-image debug logs ("hungarian_match_input"/"hungarian_match_result") are gated to avoid log spam.
+    By default, if debug_ctx contains "global_step", logs are emitted every N steps (N=100).
+    You can override via debug_ctx["hungarian_log_every"] (int) or force via debug_ctx["log_hungarian"]=True.
     """
     B, Q, Hm, Wm = mask_logits.shape
     device = mask_logits.device
     indices: List[Tuple[torch.Tensor, torch.Tensor]] = []
     ctx = {} if debug_ctx is None else dict(debug_ctx)
+
+    def _should_log_hungarian(ctx_: Dict) -> bool:
+        if logger is None:
+            return False
+        if bool(ctx_.get("log_hungarian", False)):
+            return True
+        gs = ctx_.get("global_step", None)
+        if gs is None:
+            # No step notion -> keep behavior (log if logger provided)
+            return True
+        try:
+            gs_i = int(gs)
+        except Exception:
+            return False
+        every = ctx_.get("hungarian_log_every", 100)
+        try:
+            every_i = int(every)
+        except Exception:
+            every_i = 100
+        if every_i <= 0:
+            return False
+        return (gs_i % every_i) == 0
+
+    do_log = _should_log_hungarian(ctx)
 
     if allowed_queries is None:
         allowed_queries = [torch.ones((Q,), dtype=torch.bool, device=device) for _ in range(B)]
@@ -144,7 +158,7 @@ def hungarian_match(
             allow = torch.ones((Q,), dtype=torch.bool, device=device)
         allow = allow.to(device=device, dtype=torch.bool)
 
-        if logger is not None:
+        if do_log:
             logger.debug_event(
                 "hungarian_match_input",
                 {
@@ -166,8 +180,11 @@ def hungarian_match(
                 torch.empty(0, dtype=torch.long, device=device),
             )
             indices.append(empty)
-            if logger is not None:
-                logger.debug_event("hungarian_match_result", {**ctx, "b": b, "matched": 0, "reason": "empty_gt"})
+            if do_log:
+                logger.debug_event(
+                    "hungarian_match_result",
+                    {**ctx, "b": b, "matched": 0, "reason": "empty_gt"},
+                )
             continue
 
         # If no queries allowed, no matches.
@@ -177,8 +194,11 @@ def hungarian_match(
                 torch.empty(0, dtype=torch.long, device=device),
             )
             indices.append(empty)
-            if logger is not None:
-                logger.debug_event("hungarian_match_result", {**ctx, "b": b, "matched": 0, "reason": "no_allowed_queries"})
+            if do_log:
+                logger.debug_event(
+                    "hungarian_match_result",
+                    {**ctx, "b": b, "matched": 0, "reason": "no_allowed_queries"},
+                )
             continue
 
         tgt_masks_resized = F.interpolate(
@@ -191,7 +211,12 @@ def hungarian_match(
         pred_allowed_idx = torch.nonzero(allow, as_tuple=False).squeeze(1)  # [Qa]
         pred_allowed = pred[pred_allowed_idx]  # [Qa, Hm, Wm]
 
-        cost = match_cost(pred_allowed, tgt_masks_resized, cost_bce=cost_bce, cost_dice=cost_dice)  # [N_gt, Qa]
+        cost = match_cost(
+            pred_allowed,
+            tgt_masks_resized,
+            cost_bce=cost_bce,
+            cost_dice=cost_dice,
+        )  # [N_gt, Qa]
 
         # Optional per-query additive bias (same for all GT rows)
         extra = extra_query_cost[b]
@@ -208,7 +233,7 @@ def hungarian_match(
         pred_ind = pred_allowed_idx[pred_ind_allowed]
         indices.append((pred_ind, tgt_ind))
 
-        if logger is not None:
+        if do_log:
             logger.debug_event(
                 "hungarian_match_result",
                 {
@@ -223,7 +248,6 @@ def hungarian_match(
             )
 
     return indices
-
 
 # ------------------- Full loss computation -------------------
 

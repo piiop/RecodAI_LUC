@@ -876,7 +876,6 @@ class Mask2FormerForgeryModel(nn.Module):
         - 'masks': [K, Hm, Wm] uint8
         - 'mask_scores': [K]          (qscore)
         - 'mask_forgery_scores': [K]  (cls_prob)
-        - 'image_authenticity': float in [0,1], prob of "forged" (presence_prob)
 
         Train/Inference consistency:
         qscore[q]   = sigmoid(class_logit[q]) * mean(sigmoid(mask_logit[q]))
@@ -906,7 +905,7 @@ class Mask2FormerForgeryModel(nn.Module):
 
         outputs = []
         for b in range(B):
-            # --- robust logging / debugging (kept + expanded) ---
+            # --- logging / debugging ---
             max_cls_prob = float(cls_probs[b].max().detach().cpu())
             max_mask_prob = float(mask_probs[b].max().detach().cpu())
             max_qscore = float(qscore[b].max().detach().cpu())
@@ -915,7 +914,7 @@ class Mask2FormerForgeryModel(nn.Module):
             max_mask_mass = float(mask_mass[b].max().detach().cpu())
             image_presence = float(presence_prob[b].detach().cpu())
 
-            # Selection: topk by qscore OR threshold by qscore (preferred) OR legacy cls threshold
+            # Selection: topk by qscore OR threshold by qscore
             keep = torch.zeros(Q, dtype=torch.bool, device=mask_logits.device)
 
             if topk is not None and int(topk) > 0:
@@ -944,9 +943,7 @@ class Mask2FormerForgeryModel(nn.Module):
                     "masks": torch.zeros((0, Hm, Wm), dtype=torch.uint8, device=mask_logits.device),
                     "mask_scores": torch.empty(0, device=mask_logits.device),
                     "mask_forgery_scores": torch.empty(0, device=mask_logits.device),
-                    "image_authenticity": image_presence,   # prob forged (presence_prob)
-                    # logging / debugging
-                    "presence_prob": image_presence,
+                    "image_forged_prob": image_presence,
                     "gate_pass": gate_pass,
                     "max_cls_prob": max_cls_prob,
                     "max_qscore": max_qscore,
@@ -979,9 +976,7 @@ class Mask2FormerForgeryModel(nn.Module):
                 "masks": masks_b,
                 "mask_scores": scores_b,
                 "mask_forgery_scores": cls_b,
-                "image_authenticity": image_presence,  # prob forged (presence_prob)
-                # logging / debugging
-                "presence_prob": image_presence,
+                "image_forged_prob": image_presence,
                 "gate_pass": gate_pass,
                 "max_cls_prob": max_cls_prob,
                 "max_qscore": max_qscore,
