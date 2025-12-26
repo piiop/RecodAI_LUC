@@ -34,7 +34,8 @@ python -m src.cli cv \
   -c base_v2.yaml \
   -o trainer.epochs=25 \
   -o trainer.n_folds=3 \
-  -o trainer.name=oof_tv_0p10_cls1p0_cnb_tk1_mm0p002_pr0p02_m0p5 \
+  -o trainer.name=oof_tv_0p10_cls1p0_cnb_tk1_mm0p002_pr0p02_m0p5_img512 \
+  -o data.img_size=512
   -o model.tv_lambda=0.10 \
   -o model.loss_weight_mask_cls=1.0 \
   -o model.authenticity_penalty_weight=1.0 \

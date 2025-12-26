@@ -3,6 +3,9 @@
 experiment:
   name: base_loss_v3
 
+data:
+  img_size: 512
+
 model:
   type: mask2former_v2
     # Backbone
@@ -15,7 +18,7 @@ model:
   cost_dice: 1.0
   cost_qscore: 0.0   # optional: bias matching toward high-qscore queries
 
-  # Loss weights (new architecture)
+  # Loss weights 
   loss_weight_mask_bce: 1.0
   loss_weight_mask_dice: 1.0
   loss_weight_mask_cls: 1.0
@@ -40,7 +43,6 @@ model:
 
   # Inference defaults (train-aligned; optional post-filtering)
   default_mask_threshold: 0.5
-  default_cls_threshold: 0.0          # legacy; kept for compatibility
   default_qscore_threshold: null
   default_topk: 2
   default_min_mask_mass: 0.001
@@ -52,7 +54,6 @@ trainer:
   batch_size: 4
   lr: 1.0e-4
   weight_decay: 1.0e-4
-  img_size: 256  
 
   # CV-only
   n_folds: 3
