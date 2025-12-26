@@ -22,7 +22,7 @@ from src.utils.wandb_utils import (
     finish_run,
 )
 from src.utils.config_utils import sanitize_model_kwargs
-from src.utils.cls_collapse_logger import ClsCollapseLogger
+from src.utils.logger_helper import LoggerHelper
 
 # Helpers
 def collect_optimizer_debug(model, optimizer, keywords=("img_head", "class_head", "gate")):
@@ -125,7 +125,7 @@ def run_full_train(
     model = Mask2FormerForgeryModel(**mk).to(device)
 
     run_name = f"full_{save_path.stem}"
-    collapse_logger = ClsCollapseLogger(out_dir="experiments/cls_collapse", run_name=run_name)
+    collapse_logger = LoggerHelper(out_dir="experiments/cls_collapse", run_name=run_name)
     collapse_logger.write_meta(
         {
             "device": str(device),

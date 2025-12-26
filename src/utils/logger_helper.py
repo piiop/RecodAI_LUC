@@ -1,4 +1,4 @@
-# src/utils/cls_collapse_logger.py
+# src/utils/logger_helper.py
 from __future__ import annotations
 
 import csv
@@ -43,7 +43,7 @@ def _jsonify(v: Any) -> Any:
 
     return v
 
-class ClsCollapseLogger:
+class LoggerHelper:
     """
     Logs:
       - run meta (json)

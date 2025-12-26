@@ -5,7 +5,7 @@ Run K-fold cross-validation with Mask2FormerForgeryModel, producing per-fold and
 overall OOF predictions scored with the official Kaggle metric.
 
 Aligned with train_full:
-- Uses ClsCollapseLogger (JSON/CSV/JSONL debug logs)
+- Uses LoggerHelper (JSON/CSV/JSONL debug logs)
 - Uses model(..., inference_overrides={"logger":..., "debug_ctx":...}) during training
 - Uses model.forward_logits(...) for debug stats (no stale internal calls)
 """
@@ -42,7 +42,7 @@ from src.utils.wandb_utils import (
     finish_run,
 )
 from src.utils.config_utils import sanitize_model_kwargs
-from src.utils.cls_collapse_logger import ClsCollapseLogger
+from src.utils.logger_helper import LoggerHelper
 
 def collect_optimizer_debug(model, optimizer, keywords=("img_head", "class_head", "gate")):
     opt_param_ids = {id(p) for g in optimizer.param_groups for p in g["params"]}
@@ -288,7 +288,7 @@ def run_cv(
 
         # fold logger
         run_name = f"cv_fold{fold + 1}"
-        collapse_logger = ClsCollapseLogger(
+        collapse_logger = LoggerHelper(
             out_dir=debug_out_dir,
             run_name=run_name,
             enable_debug=bool(enable_debug_logs),
@@ -714,7 +714,7 @@ def run_cv(
     overall_area_mean = float(np.nanmean(oof_pred_area_ratio[overall_non_auth])) if overall_non_auth.any() else 0.0
 
     # Use a dedicated logger entry so it’s easy to find across folds/runs
-    oof_logger = ClsCollapseLogger(
+    oof_logger = LoggerHelper(
         out_dir=debug_out_dir,
         run_name="cv_oof_summary",
         enable_debug=bool(enable_debug_logs),
