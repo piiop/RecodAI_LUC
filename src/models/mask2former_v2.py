@@ -768,21 +768,20 @@ class Mask2FormerForgeryModel(nn.Module):
 
         # ---- training loss ----
         if self.training and targets is not None:
-            # Train-time survival should mirror inference rules (top-k + min-mass),
-            # but allow per-call overrides.
-            train_topk = overrides.get("topk", None)
-            if train_topk is None:
-                train_topk = self.default_topk
-            if train_topk is None:
-                train_topk = 2
+            # Resolve survival knobs ONCE, using the same fallback policy as inference.
+            overrides = inference_overrides or {}
 
-            train_min_mask_mass = overrides.get("min_mask_mass", None)
-            if train_min_mask_mass is None:
-                train_min_mask_mass = self.default_min_mask_mass
+            train_topk = overrides.get("topk", self.default_topk)
+            train_min_mask_mass = overrides.get("min_mask_mass", self.default_min_mask_mass)
+            train_qscore_thr = overrides.get("qscore_threshold", self.default_qscore_threshold)
+
+            # If caller didn't specify topk OR qscore_threshold, we default to topk=2 (shared policy).
+            if train_topk is None and train_qscore_thr is None:
+                train_topk = 2
             if train_min_mask_mass is None:
                 train_min_mask_mass = 0.0
 
-            return compute_losses(
+            loss_dict = compute_losses(
                 mask_logits,
                 class_logits,
                 targets,
@@ -790,7 +789,7 @@ class Mask2FormerForgeryModel(nn.Module):
                 cost_bce=self.cost_bce,
                 cost_dice=self.cost_dice,
                 cost_qscore=float(getattr(self, "cost_qscore", 0.0)),
-                # loss weights (map legacy img_auth -> presence)
+                # loss weights
                 authenticity_penalty_weight=self.authenticity_penalty_weight,
                 loss_weight_mask_bce=self.loss_weight_mask_bce,
                 loss_weight_mask_dice=self.loss_weight_mask_dice,
@@ -798,7 +797,7 @@ class Mask2FormerForgeryModel(nn.Module):
                 loss_weight_presence=self.loss_weight_presence,
                 loss_weight_auth_penalty=self.loss_weight_auth_penalty,
                 # sparse-by-construction knobs
-                train_topk=int(train_topk),
+                train_topk=int(train_topk) if train_topk is not None else 0,
                 train_min_mask_mass=float(train_min_mask_mass),
                 few_queries_lambda=float(getattr(self, "few_queries_lambda", 0.10)),
                 presence_lse_beta=float(getattr(self, "presence_lse_beta", 10.0)),
@@ -812,6 +811,15 @@ class Mask2FormerForgeryModel(nn.Module):
                 logger=overrides.get("logger", None),
                 debug_ctx=overrides.get("debug_ctx", None),
             )
+
+            # Surface resolved survival values so train_cv can log the *actual* policy used.
+            loss_dict["train_topk"] = torch.as_tensor(int(train_topk) if train_topk is not None else 0, device=mask_logits.device)
+            loss_dict["train_min_mask_mass"] = torch.as_tensor(float(train_min_mask_mass), device=mask_logits.device)
+            loss_dict["train_qscore_threshold"] = torch.as_tensor(
+                float(train_qscore_thr) if train_qscore_thr is not None else float("nan"),
+                device=mask_logits.device,
+            )
+            return loss_dict
 
         # ---- inference (also used when targets is None) ----
         preds = self.inference(
@@ -885,11 +893,18 @@ class Mask2FormerForgeryModel(nn.Module):
         B, Q, Hm, Wm = mask_logits.shape
 
         # Ensure defaults if not specified
-        mask_threshold      = mask_threshold      if mask_threshold      is not None else self.default_mask_threshold
-        qscore_threshold    = qscore_threshold    if qscore_threshold    is not None else self.default_qscore_threshold
-        topk                = topk                if topk                is not None else self.default_topk
-        min_mask_mass       = min_mask_mass       if min_mask_mass       is not None else self.default_min_mask_mass
-        presence_threshold  = presence_threshold  if presence_threshold  is not None else self.default_presence_threshold
+        mask_threshold     = mask_threshold     if mask_threshold     is not None else self.default_mask_threshold
+        qscore_threshold   = qscore_threshold   if qscore_threshold   is not None else self.default_qscore_threshold
+        topk               = topk               if topk               is not None else self.default_topk
+        min_mask_mass      = min_mask_mass      if min_mask_mass      is not None else self.default_min_mask_mass
+        presence_threshold = presence_threshold if presence_threshold is not None else self.default_presence_threshold
+
+        # Shared fallback policy with training:
+        # If neither topk nor qscore_threshold is set, default to topk=2 (sparse-by-construction).
+        if topk is None and qscore_threshold is None:
+            topk = 2
+        if min_mask_mass is None:
+            min_mask_mass = 0.0
 
         # Shapes: allow class_logits to be [B,Q,1]
         if class_logits.dim() == 3 and class_logits.size(-1) == 1:

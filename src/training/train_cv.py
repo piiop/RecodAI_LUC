@@ -401,16 +401,14 @@ def run_cv(
                     printed_logit_stats = True
 
 
-                # --- inside the training step, when calling model(...) ---
                 loss_dict = model(
                     images,
                     targets,
                     inference_overrides={
                         "logger": collapse_logger,
                         "debug_ctx": {"fold": fold + 1, "epoch": epoch + 1, "global_step": global_step},
-                        # ensure train-time survival is explicitly aligned with defaults
-                        "topk": getattr(model, "default_topk", None),
-                        "min_mask_mass": getattr(model, "default_min_mask_mass", None),
+                        # DO NOT force topk/min_mask_mass here; let the model resolve the same way inference does.
+                        # (You can still override explicitly in YAML/ctor via default_topk/default_min_mask_mass.)
                     },
                 )
                 loss = loss_dict["loss_total"]
@@ -436,8 +434,10 @@ def run_cv(
                         "w_presence": float(getattr(model, "loss_weight_presence", 0.0)),
                         "w_auth_penalty": float(getattr(model, "loss_weight_auth_penalty", 0.0)),
                         "tv_lambda": float(getattr(model, "tv_lambda", 0.0)),
-                        "train_topk": int(getattr(model, "default_topk", -1) or -1),
-                        "train_min_mask_mass": float(getattr(model, "default_min_mask_mass", 0.0) or 0.0),
+                        "train_topk": int(loss_dict.get("train_topk", -1).detach().cpu().item())
+                                     if "train_topk" in loss_dict else int(getattr(model, "default_topk", -1) or -1),
+                        "train_min_mask_mass": float(loss_dict.get("train_min_mask_mass", 0.0).detach().cpu().item())
+                                              if "train_min_mask_mass" in loss_dict else float(getattr(model, "default_min_mask_mass", 0.0) or 0.0),
                         "few_queries_lambda": float(getattr(model, "few_queries_lambda", 0.0)),
                         "presence_lse_beta": float(getattr(model, "presence_lse_beta", 0.0)),
                     }
